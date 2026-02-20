@@ -21,7 +21,7 @@ QtObject {
     readonly property real textScale: detectTextScale()
 
     readonly property FontLoader _interFont: FontLoader {
-        source: "qrc:/qt/qml/sage/assets/fonts/Inter-VariableFont_opsz,wght.ttf"
+        source: "qrc:/qt/qml/sage/assets/fonts/b0a4eabe-5fe5-41e3-8dc3-2df2b82ec4eb.ttf"
     }
 
     function px(base) {

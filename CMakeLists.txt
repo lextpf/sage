@@ -142,7 +142,7 @@ qt_add_qml_module(sage
         qml/PasswordDialog.qml
         qml/SvgIcon.qml
     RESOURCES
-        "assets/fonts/Inter-VariableFont_opsz,wght.ttf"
+        "assets/fonts/b0a4eabe-5fe5-41e3-8dc3-2df2b82ec4eb.ttf"
         ${SAGE_SVGS}
 )
 
