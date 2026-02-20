@@ -1,0 +1,99 @@
+# Build directories
+build/
+build-*/
+out/
+bin/
+lib/
+*.exe
+*.dll
+*.lib
+*.obj
+*.o
+*.a
+*.so
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+*.cmake
+!CMakeLists.txt
+
+# Visual Studio
+.vs/
+.vscode/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files
+fence
+*.fence
+*.pr$m
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.cache
+
+# Package files
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# Dependencies
+vcpkg_installed/
+vcpkg_manifest/
+conan/
+deps/
+
+# Documentation
+docs/doxygen/
+docs/html/
+docs/latex/
+docs/rtf/
+docs/man/
+docs/xml/
+
+# Coverage
+*.gcov
+*.gcda
+*.gcno
+coverage/
+
+# Profiling
+*.prof
+gmon.out
+
+# Debug
+*.pdb
+*.ilk
+*.exp
+
+# Release artifacts
+Release/
+Debug/
+x64/
+x86/
+Win32/
+
