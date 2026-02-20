@@ -22,7 +22,7 @@
 <div align="center">
 <br>
 
-![Preview](./PREVIEW.png)
+<img src="PREVIEW.png" alt="Preview" width="525"/>
 
 </div>
 
