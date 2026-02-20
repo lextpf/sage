@@ -51,9 +51,9 @@
 
 ## Features
 
-### Dual Interface
+### Interface
 
-sage ships with a **Qt6 QML** graphical vault manager and a **streaming CLI** for scripts and automation.
+sage ships with a **Qt6 QML** graphical manager and a **streaming CLI** for scripts and automation.
 
 ```mermaid
 ---
