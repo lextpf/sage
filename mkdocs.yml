@@ -1,0 +1,95 @@
+site_name: sage Documentation
+use_directory_urls: false
+validation:
+  links:
+    not_found: info
+site_description: AES-256-GCM encryption utility with Qt6 GUI and CLI modes
+
+theme:
+  name: material
+  custom_dir: overrides
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.share
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - def_list
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home:
+    - index.md
+  - API Reference:
+    - Crypto:
+      - Crypto/index.md
+      - Crypto/Cryptography.md
+      - Crypto/locked_allocator.md
+      - Crypto/locked_header.md
+      - Crypto/secure_string.md
+      - FileOperations: Crypto/FileOperations/FileOperations.md
+      - Clipboard: Crypto/Clipboard/Clipboard.md
+    - Vault:
+      - Vault/index.md
+      - Vault/VaultRecord.md
+      - VaultModel:
+        - Vault/VaultModel/index.md
+        - Vault/VaultModel/VaultListModel.md
+        - Vault/VaultModel/VaultListModel/Roles.md
+    - GUI:
+      - GUI/index.md
+      - Backend: GUI/Backend/Backend.md
+      - FillController: GUI/FillController/FillController.md
+      - State: GUI/FillController/FillController/State.md
+      - TypeTarget: GUI/FillController/FillController/TypeTarget.md
+    - CLI:
+      - CLI/index.md
+      - MaskedCredentialView: CLI/MaskedCredentialView/MaskedCredentialView.md
+      - HitRegion: CLI/MaskedCredentialView/MaskedCredentialView/HitRegion.md
+    - Utilities:
+      - Utilities/index.md

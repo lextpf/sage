@@ -1,0 +1,54 @@
+# Doxide Configuration for sage
+# https://doxide.org
+
+title: sage
+description: AES-256-GCM encryption utility with Qt6 GUI and CLI modes
+
+output: docs
+
+files:
+  - "src/*.h"
+  - "src/*.cpp"
+
+groups:
+  - name: Crypto
+    title: ":material-lock: Crypto"
+    description: AES-256-GCM encryption, scrypt key derivation, and secure memory primitives.
+    groups:
+      - name: FileOperations
+        title: FileOperations
+        description: File-level encryption, decryption, batch processing, and stream I/O.
+      - name: Clipboard
+        title: Clipboard
+        description: Windows clipboard operations with TTL-based scrubbing.
+
+  - name: Vault
+    title: ":material-safe-square-outline: Vault"
+    description: Vault format, on-demand credential decryption, and record management.
+    groups:
+      - name: VaultModel
+        title: VaultModel
+        description: QAbstractListModel providing filtered vault records to QML.
+
+  - name: GUI
+    title: ":material-monitor: GUI"
+    description: Qt6 GUI, QML backend, styling, and view models.
+    groups:
+      - name: Backend
+        title: Backend
+        description: QML backend for vault operations and credential management.
+      - name: FillController
+        title: FillController
+        description: Credential auto-fill via global Windows input hooks.
+
+  - name: CLI
+    title: ":material-console: CLI"
+    description: Console-mode credential viewer and keystroke injection.
+    groups:
+      - name: MaskedCredentialView
+        title: MaskedCredentialView
+        description: Interactive masked console UI for decrypted credentials.
+
+  - name: Utilities
+    title: ":material-toolbox: Utilities"
+    description: String, hex, path utilities, and shared helpers.
