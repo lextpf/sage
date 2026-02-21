@@ -122,11 +122,11 @@ graph LR
     V --- G --- S --- C
 ```
 
-- 🔒 **VirtualLock** — Locks sensitive pages to prevent swapping to disk
-- 🚧 **Guard Pages** — `PAGE_NOACCESS` regions flanking every allocation detect overflows
-- 🧹 **Secure Wiping** — `SecureZeroMemory` scrubs data before deallocation
-- 🐤 **Canary Protection** — 0xD0 sentinel at the tail of every buffer catches overruns
-- 📋 **Clipboard Scrubbing** — Auto-wipes copied credentials after a configurable TTL
+- 🔒 **VirtualLock** - Locks sensitive pages to prevent swapping to disk
+- 🚧 **Guard Pages** - `PAGE_NOACCESS` regions flanking every allocation detect overflows
+- 🧹 **Secure Wiping** - `SecureZeroMemory` scrubs data before deallocation
+- 🐤 **Canary Protection** - 0xD0 sentinel at the tail of every buffer catches overruns
+- 📋 **Clipboard Scrubbing** - Auto-wipes copied credentials after a configurable TTL
 
 ### Process Hardening
 
@@ -173,8 +173,12 @@ Credentials are stored in `.sage` files using **on-demand decryption** - each re
 ### Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **MSVC 2019+** (C++20 support)
+- **Visual Studio 2022** (MSVC v143, C++23)
+- **CMake 3.20+**
 - **vcpkg** with the toolchain at a known path
+- **Python 3** (for documentation post-processing)
+- **Font Awesome Pro 7.2** SVGs in `assets/svgs/` (not included, requires license)
+- **doxide** + **mkdocs** (optional, for API docs generation)
 
 ### Building
 
