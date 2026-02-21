@@ -6,6 +6,11 @@
 
 #include "Cryptography.h"
 
+#ifdef USE_QT_UI
+#include "Logging.h"
+#include <QtCore/QElapsedTimer>
+#endif
+
 namespace sage {
 
 bool Cryptography::ctEqualRaw(const void* a, const void* b, size_t n)
@@ -76,6 +81,9 @@ BOOL Cryptography::setSecureProcessMitigations(bool allowDynamicCode)
     imgPolicy.PreferSystem32Images = 1;
     allSuccess &= pSet(ProcessImageLoadPolicy, &imgPolicy, sizeof(imgPolicy));
 
+#ifdef USE_QT_UI
+    qCInfo(logCrypto) << "setSecureProcessMitigations:" << (allSuccess ? "all applied" : "partial");
+#endif
     return allSuccess;
 }
 
@@ -110,7 +118,14 @@ BOOL Cryptography::tryEnableLockPrivilege()
     DWORD gle = GetLastError();
     CloseHandle(hToken);
 
-    return (gle == ERROR_SUCCESS);
+    BOOL result = (gle == ERROR_SUCCESS);
+#ifdef USE_QT_UI
+    if (result)
+        qCInfo(logCrypto) << "SeLockMemoryPrivilege: enabled";
+    else
+        qCWarning(logCrypto) << "SeLockMemoryPrivilege: not available (error=" << gle << ")";
+#endif
+    return result;
 }
 
 void Cryptography::opensslCheck(int ok, const char* msg)
@@ -159,6 +174,11 @@ std::vector<unsigned char> Cryptography::deriveKey(
         passlen = pwd.s.size() * sizeof(CharT);
     }
 
+#ifdef USE_QT_UI
+    QElapsedTimer timer;
+    timer.start();
+#endif
+
     opensslCheck(
         EVP_PBE_scrypt(pass, passlen,
             salt.data(), salt.size(),
@@ -166,6 +186,10 @@ std::vector<unsigned char> Cryptography::deriveKey(
             key.data(), key.size()),
         "scrypt failed"
     );
+
+#ifdef USE_QT_UI
+    qCDebug(logCrypto) << "deriveKey: scrypt completed in" << timer.elapsed() << "ms";
+#endif
 
     return key;
 }
@@ -228,6 +252,10 @@ std::vector<unsigned char>
     out.insert(out.end(), ct.begin(), ct.end());
     out.insert(out.end(), tag.begin(), tag.end());
 
+#ifdef USE_QT_UI
+    qCDebug(logCrypto) << "encryptPacket: plaintext=" << plaintext.size()
+                       << "bytes, packet=" << out.size() << "bytes";
+#endif
     cleanseString(key);
     return out;
 }
@@ -302,6 +330,9 @@ std::vector<unsigned char>
     int ok = EVP_DecryptFinal_ex(ctx.p, plain.data() + outlen, &fin);
     if (ok != 1)
     {
+#ifdef USE_QT_UI
+        qCWarning(logCrypto) << "decryptPacket: GCM authentication failed";
+#endif
         cleanseString(key);
         throw std::runtime_error("Authentication failed (bad password or corrupted data)");
     }

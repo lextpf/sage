@@ -2,6 +2,7 @@
 
 #include "FillController.h"
 #include "Clipboard.h"
+#include "Logging.h"
 
 #include <QtCore/QThread>
 #include <QtGui/QGuiApplication>
@@ -46,8 +47,21 @@ FillController::State FillController::state() const
     return m_State;
 }
 
+static const char* stateToString(FillController::State s)
+{
+    switch (s)
+    {
+        case FillController::State::Idle:          return "Idle";
+        case FillController::State::ArmedUsername:  return "ArmedUsername";
+        case FillController::State::ArmedPassword:  return "ArmedPassword";
+        case FillController::State::Typing:         return "Typing";
+    }
+    return "Unknown";
+}
+
 void FillController::transitionTo(State newState)
 {
+    qCDebug(logFill) << "state:" << stateToString(m_State) << "->" << stateToString(newState);
     bool wasArmed = isArmed();
     m_State = newState;
     bool nowArmed = isArmed();
@@ -104,6 +118,8 @@ void FillController::arm(int recordIndex,
     installHooks();
     transitionTo(State::ArmedUsername);
 
+    qCInfo(logFill) << "armed: recordIndex=" << m_RecordIndex
+                    << "timeout=" << FILL_TIMEOUT_SECONDS << "s";
     emit countdownSecondsChanged();
     m_TimeoutTimer.start();
 }
@@ -113,6 +129,7 @@ void FillController::cancel()
     if (m_State == State::Idle)
         return;
 
+    qCInfo(logFill) << "cancel: from state" << stateToString(m_State);
     m_TimeoutTimer.stop();
     removeHooks();
     transitionTo(State::Idle);
@@ -138,7 +155,10 @@ void FillController::onTimeoutTick()
 
     // Auto-cancel if the user hasn't clicked within the timeout window.
     if (m_RemainingSeconds <= 0)
+    {
+        qCInfo(logFill) << "timeout: auto-cancel";
         cancel();
+    }
 }
 
 void FillController::installHooks()
@@ -148,6 +168,11 @@ void FillController::installHooks()
     // the hooks apply to all threads on the desktop.
     m_MouseHook    = SetWindowsHookExW(WH_MOUSE_LL,    mouseHookProc,    nullptr, 0);
     m_KeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHookProc, nullptr, 0);
+    if (m_MouseHook && m_KeyboardHook)
+        qCDebug(logFill) << "hooks installed";
+    else
+        qCWarning(logFill) << "hook install failed: mouse=" << !!m_MouseHook
+                           << "keyboard=" << !!m_KeyboardHook;
 }
 
 void FillController::removeHooks()
@@ -165,6 +190,7 @@ void FillController::removeHooks()
     // Clear the singleton so stale hook callbacks (if any are still in
     // the message queue) won't dereference a dead pointer.
     s_instance = nullptr;
+    qCDebug(logFill) << "hooks removed";
 }
 
 LRESULT CALLBACK FillController::mouseHookProc(int nCode, WPARAM wParam, LPARAM lParam)
@@ -199,6 +225,8 @@ LRESULT CALLBACK FillController::mouseHookProc(int nCode, WPARAM wParam, LPARAM 
             }
 
             s_instance->m_PendingTarget = target;
+            qCInfo(logFill) << "Ctrl+Click detected: target="
+                            << (target == TypeTarget::Username ? "username" : "password");
 
             // Queue performType on the Qt event loop - we can't do Qt work
             // or blocking calls inside a low-level hook callback.
@@ -270,12 +298,14 @@ void FillController::performType()
         }
         catch (const std::exception& e)
         {
+            qCWarning(logFill) << "performType: decrypt failed:" << e.what();
             emit fillError(QString("Decrypt failed: %1").arg(e.what()));
             cancel();
             return;
         }
         catch (...)
         {
+            qCWarning(logFill) << "performType: decrypt failed (unknown)";
             emit fillError(QStringLiteral("Decrypt failed"));
             cancel();
             return;
@@ -297,6 +327,7 @@ void FillController::performType()
 
         if (!success)
         {
+            qCWarning(logFill) << "performType: SendInput failed";
             emit fillError(QStringLiteral("Failed to send keystrokes"));
             cancel();
             return;
@@ -306,6 +337,7 @@ void FillController::performType()
 
         if (target == TypeTarget::Username)
         {
+            qCInfo(logFill) << "performType: username typed for" << service;
             // Username typed - reset the countdown and transition to
             // ArmedPassword so the user can Ctrl+Click the password field.
             m_RemainingSeconds = FILL_TIMEOUT_SECONDS;
@@ -315,6 +347,7 @@ void FillController::performType()
         }
         else
         {
+            qCInfo(logFill) << "performType: password typed for" << service;
             // Password typed - both phases complete. Tear down hooks and
             // notify the backend so it can restore the window.
             m_TimeoutTimer.stop();

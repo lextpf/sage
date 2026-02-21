@@ -70,6 +70,7 @@ set(SAGE_SOURCES
     src/VaultModel.cpp
     src/QmlMain.cpp
     src/Vault.cpp
+    src/Logging.cpp
 )
 
 qt_standard_project_setup()
@@ -140,6 +141,7 @@ qt_add_qml_module(sage
         qml/AccountDialog.qml
         qml/ConfirmDialog.qml
         qml/PasswordDialog.qml
+        qml/RippleEffect.qml
         qml/SvgIcon.qml
     RESOURCES
         "assets/fonts/b0a4eabe-5fe5-41e3-8dc3-2df2b82ec4eb.ttf"

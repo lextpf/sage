@@ -1,10 +1,15 @@
 import QtQuick
+import QtQuick.Layouts
+
+// Bottom status bar. Full-width, outside content margins.
 
 Rectangle {
     id: root
 
     property string statusText: "Ready"
     property bool fillArmed: false
+    property string vaultFileName: ""
+    property int accountCount: 0
 
     implicitHeight: 36
     gradient: Gradient {
@@ -12,7 +17,7 @@ Rectangle {
         GradientStop { position: 1; color: Theme.bgFooterEnd }
     }
 
-    // Top border
+    // Top border.
     Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
@@ -21,33 +26,66 @@ Rectangle {
         color: Theme.borderDim
     }
 
-    Text {
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.left: parent.left
+    RowLayout {
+        anchors.fill: parent
         anchors.leftMargin: 20
-        text: root.statusText
-        font.family: Theme.fontFamily
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: Theme.textSubtle
-    }
-
-    Rectangle {
-        id: armedIndicator
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.right: parent.right
         anchors.rightMargin: 20
-        width: 8
-        height: 8
-        radius: 4
-        color: Theme.fillArmedDot
-        visible: root.fillArmed
+        spacing: 16
 
-        SequentialAnimation on opacity {
-            running: armedIndicator.visible
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.3; duration: 800; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: 800; easing.type: Easing.InOutSine }
+        // Status text
+        Text {
+            text: root.statusText
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSmall
+            font.weight: Font.Medium
+            color: Theme.textSubtle
+        }
+
+        Item { Layout.fillWidth: true }
+
+        // Vault filename
+        Text {
+            visible: root.vaultFileName !== ""
+            text: root.vaultFileName
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.textMuted
+        }
+
+        // Dot separator, hidden when either side is absent.
+        Rectangle {
+            visible: root.vaultFileName !== "" && root.accountCount > 0
+            width: 3
+            height: 3
+            radius: 1.5
+            color: Theme.textDisabled
+            Layout.alignment: Qt.AlignVCenter
+        }
+
+        // Account count
+        Text {
+            visible: root.accountCount > 0
+            text: root.accountCount + (root.accountCount === 1 ? " account" : " accounts")
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.textMuted
+        }
+
+        // Pulsing orange dot when fill is armed.
+        Rectangle {
+            id: armedIndicator
+            width: 8
+            height: 8
+            radius: 4
+            color: Theme.fillArmedDot
+            visible: root.fillArmed
+
+            SequentialAnimation on opacity {
+                running: armedIndicator.visible
+                loops: Animation.Infinite
+                NumberAnimation { to: 0.3; duration: 800; easing.type: Easing.InOutSine }
+                NumberAnimation { to: 1.0; duration: 800; easing.type: Easing.InOutSine }
+            }
         }
     }
 }

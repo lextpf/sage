@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// Yes/No confirmation. Also serves as base for error/info dialogs in Main.qml.
+
 Popup {
     id: root
 
@@ -16,6 +18,20 @@ Popup {
     padding: 0
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
+    // Scale+fade transition.
+    enter: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 150; easing.type: Easing.OutCubic }
+        }
+    }
+    exit: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120; easing.type: Easing.InCubic }
+            NumberAnimation { property: "scale"; from: 1; to: 0.92; duration: 120; easing.type: Easing.InCubic }
+        }
+    }
+
     background: Rectangle {
         color: Theme.bgDialog
         radius: Theme.radiusLarge
@@ -23,6 +39,7 @@ Popup {
         border.color: Theme.borderMedium
     }
 
+    // Overlay dimming.
     Overlay.modal: Rectangle {
         color: Theme.bgOverlay
     }
@@ -30,16 +47,30 @@ Popup {
     contentItem: ColumnLayout {
         spacing: 0
 
-        Text {
+        // Title row with red-tinted trash icon.
+        RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: 24
             Layout.leftMargin: 24
             Layout.rightMargin: 24
-            text: root.title
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.px(16)
-            font.bold: true
-            color: Theme.textPrimary
+            spacing: 8
+
+            SvgIcon {
+                source: Theme.iconTrash
+                width: Theme.px(18)
+                height: Theme.px(18)
+                color: Theme.btnDeleteText
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: root.title
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.px(16)
+                font.bold: true
+                color: Theme.textPrimary
+            }
         }
 
         Text {
@@ -62,14 +93,19 @@ Popup {
             Layout.rightMargin: 24
             spacing: Theme.spacingSmall
 
+            // Spacer pushes buttons to the right side of the dialog.
             Item { Layout.fillWidth: true }
 
+            // Ghost "No" button, low visual weight.
             Button {
                 id: noButton
                 text: "No"
                 onClicked: root.close()
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: noHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -94,9 +130,13 @@ Popup {
                                 : noButton.hovered ? Theme.borderFocusHover
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: noRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
                 }
+                onPressed: noRipple.trigger(noHover.point.position.x, noHover.point.position.y)
             }
 
+            // Primary "Yes" button. Emits confirmed() then closes.
             Button {
                 id: yesButton
                 text: "Yes"
@@ -105,7 +145,10 @@ Popup {
                     root.close();
                 }
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: yesHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -127,7 +170,10 @@ Popup {
                     border.width: 1
                     border.color: yesButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: yesRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
                 }
+                onPressed: yesRipple.trigger(yesHover.point.position.x, yesHover.point.position.y)
             }
         }
     }

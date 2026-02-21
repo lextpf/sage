@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// Add/edit account dialog. editIndex == -1 = add, >= 0 = edit that record.
+
 Popup {
     id: root
 
@@ -17,7 +19,22 @@ Popup {
     anchors.centerIn: parent
     width: 440
     padding: 0
+    // Click-outside to dismiss; no data lost until OK is clicked.
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+    // Scale+fade entrance (150ms in, 120ms out).
+    enter: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 150; easing.type: Easing.OutCubic }
+        }
+    }
+    exit: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120; easing.type: Easing.InCubic }
+            NumberAnimation { property: "scale"; from: 1; to: 0.92; duration: 120; easing.type: Easing.InCubic }
+        }
+    }
 
     background: Rectangle {
         color: Theme.bgDialog
@@ -34,7 +51,6 @@ Popup {
     contentItem: ColumnLayout {
         spacing: 0
 
-        // ── Header ──────────────────────────────────────────
         Text {
             Layout.fillWidth: true
             Layout.topMargin: 24
@@ -48,7 +64,6 @@ Popup {
             color: Theme.textPrimary
         }
 
-        // ── Fields ──────────────────────────────────────────
         GridLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 24
@@ -91,6 +106,9 @@ Popup {
                     border.width: 1
                     border.color: serviceField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
+
+                Keys.onReturnPressed: root.submitForm()
+                Keys.onEnterPressed: root.submitForm()
             }
 
             Row {
@@ -125,6 +143,9 @@ Popup {
                     border.width: 1
                     border.color: usernameField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
+
+                Keys.onReturnPressed: root.submitForm()
+                Keys.onEnterPressed: root.submitForm()
             }
 
             Row {
@@ -150,10 +171,14 @@ Popup {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeMedium
                 color: Theme.textPrimary
+                // Hover-to-reveal: re-hides when cursor leaves to reduce shoulder-surfing.
                 echoMode: showPassword ? TextInput.Normal : TextInput.Password
                 passwordCharacter: "\u2981"
                 selectByMouse: true
                 rightPadding: 36
+
+                Keys.onReturnPressed: root.submitForm()
+                Keys.onEnterPressed: root.submitForm()
 
                 property bool showPassword: eyeArea.containsMouse
 
@@ -165,6 +190,7 @@ Popup {
                     border.color: passwordField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
 
+                // Qt.NoButton tracks hover without stealing clicks. -4 margin expands hit area.
                 SvgIcon {
                     anchors.right: parent.right
                     anchors.rightMargin: 8
@@ -186,7 +212,6 @@ Popup {
             }
         }
 
-        // ── Buttons ─────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: 24
@@ -202,7 +227,10 @@ Popup {
                 text: "Cancel"
                 onClicked: root.close()
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: acctCancelHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -227,7 +255,10 @@ Popup {
                                 : cancelButton.hovered ? Theme.borderFocusHover
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: acctCancelRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
                 }
+                onPressed: acctCancelRipple.trigger(acctCancelHover.point.position.x, acctCancelHover.point.position.y)
             }
 
             Button {
@@ -243,7 +274,10 @@ Popup {
                     root.close();
                 }
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: acctOkHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -265,13 +299,29 @@ Popup {
                     border.width: 1
                     border.color: okButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: acctOkRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
                 }
+                onPressed: acctOkRipple.trigger(acctOkHover.point.position.x, acctOkHover.point.position.y)
             }
         }
     }
 
+    // Focus the first field on open so the user can start typing immediately.
     onOpened: serviceField.forceActiveFocus()
 
+    // Shared submit for OK click and Enter. Password not trimmed (preserves spaces).
+    function submitForm() {
+        root.accepted(
+            serviceField.text.trim(),
+            usernameField.text.trim(),
+            passwordField.text,
+            root.editIndex
+        );
+        root.close();
+    }
+
+    // Reset fields on open (blanks for add, pre-populated for edit).
     function resetFields() {
         serviceField.text = initialService;
         usernameField.text = initialUsername;

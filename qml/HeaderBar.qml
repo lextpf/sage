@@ -2,6 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// Top header bar: app branding (icon + title), theme toggle, and vault control
+// buttons (Load, Save, Unload). Save and Unload are disabled until a vault is loaded.
+
 RowLayout {
     id: root
     spacing: Theme.spacingMedium
@@ -12,12 +15,49 @@ RowLayout {
 
     property bool vaultLoaded: false
 
-    // Fingerprint icon
+    // App identity icon. Rainbow cycle easter egg on click.
     SvgIcon {
+        id: fingerprintIcon
         source: Theme.iconFingerprint
         width: Theme.px(32)
         height: Theme.px(32)
         color: Theme.accent
+
+        property bool cycling: false
+        property int colorIndex: 0
+        readonly property var rainbow: ["#ff4444", "#ff8800", "#ffcc00", "#44cc44", "#4488ff", "#8844ff", "#ff44cc"]
+
+        ColorAnimation on color {
+            id: rainbowAnim
+            running: false
+            duration: 120
+            onFinished: {
+                if (fingerprintIcon.cycling) {
+                    fingerprintIcon.colorIndex++;
+                    if (fingerprintIcon.colorIndex < fingerprintIcon.rainbow.length) {
+                        rainbowAnim.to = fingerprintIcon.rainbow[fingerprintIcon.colorIndex];
+                        rainbowAnim.restart();
+                    } else {
+                        // Return to accent
+                        rainbowAnim.to = Theme.accent;
+                        rainbowAnim.restart();
+                        fingerprintIcon.cycling = false;
+                    }
+                }
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                if (fingerprintIcon.cycling) return;
+                fingerprintIcon.cycling = true;
+                fingerprintIcon.colorIndex = 0;
+                rainbowAnim.to = fingerprintIcon.rainbow[0];
+                rainbowAnim.restart();
+            }
+        }
     }
 
     // Title block
@@ -39,9 +79,28 @@ RowLayout {
         }
     }
 
+    // Theme toggle: sun in dark mode, moon in light mode.
+    SvgIcon {
+        source: Theme.dark ? Theme.iconSun : Theme.iconMoon
+        width: Theme.iconSizeMedium
+        height: Theme.iconSizeMedium
+        color: themeArea.containsMouse ? Theme.accent : Theme.accentDim
+        Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
+
+        MouseArea {
+            id: themeArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Theme.toggle()
+        }
+    }
+
+    // Spacer pushes vault control buttons to the right edge.
     Item { Layout.fillWidth: true }
 
-    // Vault control buttons
+    // Vault buttons share the iconBtn palette. HoverHandler for cursor shape
+    // since MouseArea would interfere with Button's click handling.
     Button {
         id: loadBtn
         text: "Load"
@@ -49,7 +108,7 @@ RowLayout {
         rightPadding: 12
         onClicked: root.loadClicked()
 
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        HoverHandler { id: loadHover; cursorShape: Qt.PointingHandCursor }
 
         contentItem: Row {
             spacing: 6
@@ -73,6 +132,9 @@ RowLayout {
             }
         }
 
+        scale: pressed ? 0.97 : 1.0
+        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
+
         background: Rectangle {
             implicitWidth: 86
             implicitHeight: 32
@@ -84,7 +146,10 @@ RowLayout {
             border.width: 1
             border.color: loadBtn.hovered ? Theme.borderHover : Theme.borderSoft
             Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+            RippleEffect { id: loadRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
         }
+        onPressed: loadRipple.trigger(loadHover.point.position.x, loadHover.point.position.y)
     }
 
     Button {
@@ -95,7 +160,7 @@ RowLayout {
         enabled: root.vaultLoaded
         onClicked: root.saveClicked()
 
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        HoverHandler { id: saveHover; cursorShape: Qt.PointingHandCursor }
 
         contentItem: Row {
             spacing: 6
@@ -104,7 +169,7 @@ RowLayout {
                 source: Theme.iconFloppyDisk
                 width: Theme.iconSizeSmall
                 height: Theme.iconSizeSmall
-                color: saveBtn.enabled ? (saveBtn.hovered ? Theme.textSecondary : Theme.textIcon) : Theme.textDisabled
+                color: !saveBtn.enabled ? Theme.textDisabled : saveBtn.hovered ? Theme.textSecondary : Theme.textIcon
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
@@ -113,25 +178,30 @@ RowLayout {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSmall
                 font.weight: Font.Medium
-                color: saveBtn.enabled ? (saveBtn.hovered ? Theme.textSecondary : Theme.textIcon) : Theme.textDisabled
+                color: !saveBtn.enabled ? Theme.textDisabled : saveBtn.hovered ? Theme.textSecondary : Theme.textIcon
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
         }
+
+        scale: pressed ? 0.97 : 1.0
+        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
         background: Rectangle {
             implicitWidth: 86
             implicitHeight: 32
             radius: Theme.radiusSmall
             gradient: Gradient {
-                GradientStop { position: 0; color: saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 0; color: !saveBtn.enabled ? Theme.btnDisabledTop : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 1; color: !saveBtn.enabled ? Theme.btnDisabledBot : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
             }
             border.width: 1
-            border.color: saveBtn.hovered ? Theme.borderHover : Theme.borderSoft
-            opacity: saveBtn.enabled ? 1.0 : 0.5
+            border.color: !saveBtn.enabled ? Theme.borderDim : saveBtn.hovered ? Theme.borderHover : Theme.borderSoft
             Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+            RippleEffect { id: saveRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
         }
+        onPressed: saveRipple.trigger(saveHover.point.position.x, saveHover.point.position.y)
     }
 
     Button {
@@ -142,7 +212,7 @@ RowLayout {
         enabled: root.vaultLoaded
         onClicked: root.unloadClicked()
 
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        HoverHandler { id: unloadHover; cursorShape: Qt.PointingHandCursor }
 
         contentItem: Row {
             spacing: 6
@@ -151,7 +221,7 @@ RowLayout {
                 source: Theme.iconEject
                 width: Theme.iconSizeSmall
                 height: Theme.iconSizeSmall
-                color: unloadBtn.enabled ? (unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon) : Theme.textDisabled
+                color: !unloadBtn.enabled ? Theme.textDisabled : unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
@@ -160,24 +230,29 @@ RowLayout {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSmall
                 font.weight: Font.Medium
-                color: unloadBtn.enabled ? (unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon) : Theme.textDisabled
+                color: !unloadBtn.enabled ? Theme.textDisabled : unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
         }
+
+        scale: pressed ? 0.97 : 1.0
+        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
         background: Rectangle {
             implicitWidth: 96
             implicitHeight: 32
             radius: Theme.radiusSmall
             gradient: Gradient {
-                GradientStop { position: 0; color: unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 0; color: !unloadBtn.enabled ? Theme.btnDisabledTop : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 1; color: !unloadBtn.enabled ? Theme.btnDisabledBot : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
             }
             border.width: 1
-            border.color: unloadBtn.hovered ? Theme.borderHover : Theme.borderSoft
-            opacity: unloadBtn.enabled ? 1.0 : 0.5
+            border.color: !unloadBtn.enabled ? Theme.borderDim : unloadBtn.hovered ? Theme.borderHover : Theme.borderSoft
             Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+            RippleEffect { id: unloadRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
         }
+        onPressed: unloadRipple.trigger(unloadHover.point.position.x, unloadHover.point.position.y)
     }
 }

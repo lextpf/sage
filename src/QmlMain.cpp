@@ -2,6 +2,8 @@
 
 #include "QmlMain.h"
 #include "Backend.h"
+#include "Cryptography.h"
+#include "Logging.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
@@ -11,31 +13,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtQuickControls2/QQuickStyle>
 
-#include <windows.h>
-#include <dwmapi.h>
-#pragma comment(lib, "dwmapi.lib")
-
 #include <algorithm>
-#include <iostream>
-
-static void applyDarkTitleBar(QQuickWindow* window)
-{
-    if (!window)
-        return;
-    HWND hwnd = (HWND)window->winId();
-    if (!hwnd)
-        return;
-
-    BOOL darkMode = TRUE;
-    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode)); // DWMWA_USE_IMMERSIVE_DARK_MODE
-
-    COLORREF darkColor = RGB(10, 13, 18); // matches Theme.bgDeep
-    DwmSetWindowAttribute(hwnd, 34, &darkColor, sizeof(darkColor)); // DWMWA_CAPTION_COLOR
-    DwmSetWindowAttribute(hwnd, 35, &darkColor, sizeof(darkColor)); // DWMWA_BORDER_COLOR
-
-    COLORREF lightTextColor = RGB(245, 247, 251); // matches Theme.textPrimary
-    DwmSetWindowAttribute(hwnd, 36, &lightTextColor, sizeof(lightTextColor)); // DWMWA_TEXT_COLOR
-}
 
 static qreal computeUiScale()
 {
@@ -59,9 +37,14 @@ int RunQMLMode(int argc, char* argv[])
     QQuickStyle::setStyle("Basic"); // non-native style so custom theming takes full effect
 
     QGuiApplication app(argc, argv);
+    installSageMessageHandler();
+
     app.setApplicationName("sage");
     app.setOrganizationName("sage");
     const qreal uiScale = computeUiScale();
+    qCInfo(logApp) << "startup: uiScale =" << uiScale;
+    if (sage::Cryptography::isRemoteSession())
+        qCCritical(logApp) << "running in a Remote Desktop session";
 
     sage::Backend backend;
     QQmlApplicationEngine engine;
@@ -79,18 +62,11 @@ int RunQMLMode(int argc, char* argv[])
 
     if (engine.rootObjects().isEmpty())
     {
-        std::cerr << "Failed to load QML" << std::endl;
+        qCCritical(logApp) << "Failed to load QML - no root objects created";
         return 1;
     }
 
-    // Win32 title bar must be styled after the window is created
-    QObject* rootObject = engine.rootObjects().first();
-    QQuickWindow* window = qobject_cast<QQuickWindow*>(rootObject);
-    if (window)
-    {
-        applyDarkTitleBar(window);
-    }
-
+    qCInfo(logApp) << "QML loaded successfully";
     return app.exec();
 }
 

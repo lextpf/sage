@@ -1,6 +1,7 @@
 #ifdef USE_QT_UI
 
 #include "VaultModel.h"
+#include "Logging.h"
 
 namespace sage {
 
@@ -65,6 +66,7 @@ void VaultListModel::setFilter(const QString& filter)
     if (m_Filter == filter)
         return;
     m_Filter = filter;
+    qCDebug(logBackend) << "setFilter:" << (filter.isEmpty() ? "none" : filter);
     refresh();
 }
 
@@ -73,6 +75,7 @@ void VaultListModel::refresh()
     beginResetModel();
     rebuildFilteredIndices();
     endResetModel();
+    qCDebug(logBackend) << "model refresh: visible=" << m_FilteredIndices.size();
     emit countChanged();
 }
 

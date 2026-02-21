@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Single row in the accounts list. Only masked strings reach QML; no real credentials.
+
 Item {
     id: root
 
@@ -18,14 +20,57 @@ Item {
 
     Rectangle {
         anchors.fill: parent
+        // Priority: selected > hovered > zebra stripe > transparent.
         color: root.selected ? Theme.selectionActive
              : root.isHovered ? Theme.selectionHover
+             : (root.index % 2 === 1) ? Theme.rowAlt
              : "transparent"
         border.width: 0
 
         Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
 
-        // Bottom separator
+        // Top selection glow
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 3
+            opacity: root.selected ? 1.0 : 0.0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+                GradientStop { position: 0.0; color: Theme.selectionGlow }
+                GradientStop { position: 1.0; color: Theme.selectionGlowEdge }
+            }
+        }
+
+        // Bottom selection glow (mirrored)
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 3
+            opacity: root.selected ? 1.0 : 0.0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+                GradientStop { position: 0.0; color: Theme.selectionGlowEdge }
+                GradientStop { position: 1.0; color: Theme.selectionGlow }
+            }
+        }
+
+        // Left accent stripe for selected row
+        Rectangle {
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            width: 3
+            color: Theme.selectionStripe
+            opacity: root.selected ? 1.0 : 0.0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
+        }
+
+        // Row separator
         Rectangle {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
@@ -40,7 +85,7 @@ Item {
             anchors.rightMargin: 14
             spacing: 0
 
-            // Platform column
+            // Platform name (accent color for easy scanning)
             Text {
                 Layout.preferredWidth: 200
                 text: root.platform
@@ -51,7 +96,7 @@ Item {
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
 
-            // Username column
+            // Monospace for consistent masked character alignment
             Text {
                 Layout.preferredWidth: 200
                 text: root.maskedUsername
@@ -61,7 +106,6 @@ Item {
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
 
-            // Password column
             Text {
                 Layout.fillWidth: true
                 text: root.maskedPassword
@@ -72,6 +116,7 @@ Item {
             }
         }
 
+        // Full-row click/hover area
         MouseArea {
             id: mouseArea
             anchors.fill: parent

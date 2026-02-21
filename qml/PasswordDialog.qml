@@ -2,6 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// Master password entry. Escape-only close (no click-outside) to prevent
+// accidental dismissal. Re-shown with error on wrong password.
+
 Popup {
     id: root
 
@@ -16,6 +19,19 @@ Popup {
     padding: 0
     closePolicy: Popup.CloseOnEscape
 
+    enter: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 150; easing.type: Easing.OutCubic }
+        }
+    }
+    exit: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120; easing.type: Easing.InCubic }
+            NumberAnimation { property: "scale"; from: 1; to: 0.92; duration: 120; easing.type: Easing.InCubic }
+        }
+    }
+
     background: Rectangle {
         color: Theme.bgDialog
         radius: Theme.radiusLarge
@@ -27,6 +43,7 @@ Popup {
         color: Theme.bgOverlay
     }
 
+    // Clear stale password on open.
     onAboutToShow: {
         passwordField.text = "";
         passwordField.forceActiveFocus();
@@ -71,6 +88,7 @@ Popup {
             wrapMode: Text.WordWrap
         }
 
+        // Error feedback after failed attempt.
         Text {
             Layout.fillWidth: true
             Layout.topMargin: 6
@@ -81,11 +99,11 @@ Popup {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSizeMedium
             font.weight: Font.Medium
-            color: "#e05555"
+            color: Theme.textError
             wrapMode: Text.WordWrap
         }
 
-        // Password field
+        // Hover-to-reveal eye icon. Enter submits if non-empty.
         TextField {
             id: passwordField
             Layout.fillWidth: true
@@ -131,6 +149,7 @@ Popup {
                 }
             }
 
+            // Close before accepted() so dialog is gone during scrypt derivation.
             Keys.onReturnPressed: {
                 if (passwordField.text.length > 0) {
                     var pw = passwordField.text;
@@ -162,7 +181,10 @@ Popup {
                 text: "Cancel"
                 onClicked: root.close()
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: pwCancelHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -187,12 +209,15 @@ Popup {
                                 : cancelButton.hovered ? Theme.borderFocusHover
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: pwCancelRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
                 }
+                onPressed: pwCancelRipple.trigger(pwCancelHover.point.position.x, pwCancelHover.point.position.y)
             }
 
             Item { Layout.fillWidth: true }
 
-            // OCR button
+            // OCR button. Closes dialog first; re-opened on capture failure.
             Button {
                 id: ocrButton
                 onClicked: {
@@ -200,7 +225,10 @@ Popup {
                     root.ocrRequested();
                 }
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: ocrHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: RowLayout {
                     spacing: 6
@@ -235,10 +263,13 @@ Popup {
                                 : ocrButton.hovered ? Theme.borderFocusHover
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: ocrRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
                 }
+                onPressed: ocrRipple.trigger(ocrHover.point.position.x, ocrHover.point.position.y)
             }
 
-            // OK button
+            // OK button. Disabled until non-empty to prevent empty scrypt call.
             Button {
                 id: okButton
                 text: "OK"
@@ -249,7 +280,10 @@ Popup {
                     root.accepted(pw);
                 }
 
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                HoverHandler { id: pwOkHover; cursorShape: Qt.PointingHandCursor }
+
+                scale: pressed ? 0.97 : 1.0
+                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
                 contentItem: Text {
                     text: parent.text
@@ -269,9 +303,12 @@ Popup {
                         GradientStop { position: 1; color: okButton.enabled ? (okButton.pressed ? Theme.btnPressBot : okButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot) : Theme.btnDisabledBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                     }
                     border.width: 1
-                    border.color: okButton.enabled ? (okButton.hovered ? Theme.borderBright : Theme.borderBtn) : Theme.borderSubtle
+                    border.color: !okButton.enabled ? Theme.borderSubtle : okButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
+
+                    RippleEffect { id: pwOkRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
                 }
+                onPressed: pwOkRipple.trigger(pwOkHover.point.position.x, pwOkHover.point.position.y)
             }
         }
     }

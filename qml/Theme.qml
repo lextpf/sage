@@ -1,7 +1,13 @@
 pragma Singleton
 import QtQuick
+import QtCore
+
+// Centralized design tokens. Switching dark/light is a single property flip.
 
 QtObject {
+    id: root
+
+    // Scale text for HiDPI (>1920px). 0.45 dampening keeps it readable. Clamped [1.0, 1.5].
     function detectTextScale() {
         var screens = (Qt.application && Qt.application.screens) ? Qt.application.screens : [];
         if (!screens || screens.length === 0)
@@ -20,106 +26,183 @@ QtObject {
 
     readonly property real textScale: detectTextScale()
 
+    // Bundled Inter font. GUID filename is from the vendor's licensing distribution.
     readonly property FontLoader _interFont: FontLoader {
         source: "qrc:/qt/qml/sage/assets/fonts/b0a4eabe-5fe5-41e3-8dc3-2df2b82ec4eb.ttf"
     }
 
+    // Round to nearest pixel after scaling; min 1 to avoid zero-size elements.
     function px(base) {
         return Math.max(1, Math.round(base * textScale));
     }
 
-    // ── Background ──────────────────────────────────────────
-    readonly property color bgDeep:       "#0a0d12"
-    readonly property color bgCard:       Qt.rgba(0.071, 0.086, 0.118, 0.7)
-    readonly property color bgCardEnd:    Qt.rgba(0.055, 0.071, 0.102, 0.85)
-    readonly property color bgDialog:     "#0e1218"
-    readonly property color bgInput:      Qt.rgba(0.047, 0.063, 0.094, 0.9)
-    readonly property color bgInputFocus: Qt.rgba(0.059, 0.078, 0.122, 0.95)
-    readonly property color bgOverlay:    Qt.rgba(0, 0, 0, 0.55)
+    // Persisted via Settings so the preference survives restarts.
+    property bool dark: true
+    function toggle() { dark = !dark }
 
-    // ── Region Backgrounds ─────────────────────────────────
-    readonly property color bgHeaderTop:  Qt.rgba(0.118, 0.133, 0.180, 0.95)
-    readonly property color bgHeaderEnd:  Qt.rgba(0.094, 0.110, 0.149, 0.98)
-    readonly property color bgFooterTop:  Qt.rgba(0.055, 0.071, 0.102, 0.95)
-    readonly property color bgFooterEnd:  Qt.rgba(0.039, 0.051, 0.071, 1.0)
+    property Settings _settings: Settings {
+        property alias dark: root.dark
+    }
 
-    // ── Icon Button (header bar) ───────────────────────────
-    readonly property color iconBtnTop:        Qt.rgba(0.086, 0.106, 0.149, 0.8)
-    readonly property color iconBtnEnd:        Qt.rgba(0.063, 0.078, 0.118, 0.85)
-    readonly property color iconBtnHoverTop:   Qt.rgba(0.118, 0.157, 0.243, 0.9)
-    readonly property color iconBtnHoverEnd:   Qt.rgba(0.094, 0.125, 0.204, 0.92)
-    readonly property color iconBtnPressed:    Qt.rgba(0.055, 0.071, 0.110, 0.95)
+    // -- Background layers --
+    // Semi-transparent bgCard lets background blobs bleed through for depth.
+    property color bgDeep:       dark ? "#121826" : "#f7f0e4"
+    property color bgSurface:    dark ? "#161e2e" : "#f2eadc"
+    property color bgCard:       dark ? Qt.rgba(0.08, 0.10, 0.16, 0.78)   : Qt.rgba(1.0, 0.98, 0.95, 0.88)
+    property color bgCardEnd:    dark ? Qt.rgba(0.07, 0.08, 0.14, 0.86)   : Qt.rgba(0.98, 0.96, 0.92, 0.92)
+    property color bgDialog:     dark ? "#1a2236" : "#fdf8f0"
+    property color bgInput:      dark ? Qt.rgba(0.07, 0.09, 0.15, 0.92)   : Qt.rgba(1.0, 1.0, 0.99, 0.92)
+    property color bgInputFocus: dark ? Qt.rgba(0.09, 0.11, 0.19, 0.96)   : Qt.rgba(1.0, 1.0, 1.0, 0.96)
+    property color bgOverlay:    dark ? Qt.rgba(0.02, 0.03, 0.07, 0.58)   : Qt.rgba(0.28, 0.22, 0.15, 0.35)
+    property color bgHover:      dark ? Qt.rgba(0.14, 0.16, 0.28, 0.50)   : Qt.rgba(0.55, 0.40, 0.20, 0.06)
+    property color bgTableHeader:dark ? Qt.rgba(0.08, 0.10, 0.17, 0.65)   : Qt.rgba(0.96, 0.93, 0.87, 0.72)
+    property color bgTableHeaderTop: dark ? Qt.rgba(0.12, 0.13, 0.25, 0.97) : Qt.rgba(0.95, 0.91, 0.84, 0.97)
+    property color bgTableHeaderEnd: dark ? Qt.rgba(0.10, 0.11, 0.22, 0.98) : Qt.rgba(0.93, 0.89, 0.81, 0.98)
+    property color bgTooltip:    dark ? "#222e48" : "#3e3020"
+    property color bgBadge:      dark ? Qt.rgba(0.14, 0.16, 0.30, 0.82)   : Qt.rgba(0.94, 0.90, 0.82, 0.82)
 
-    // ── Ghost / Secondary Button ───────────────────────────
-    readonly property color ghostBtnTop:        Qt.rgba(0.078, 0.094, 0.141, 0.6)
-    readonly property color ghostBtnEnd:        Qt.rgba(0.063, 0.078, 0.118, 0.7)
-    readonly property color ghostBtnHoverTop:   Qt.rgba(0.157, 0.220, 0.392, 0.45)
-    readonly property color ghostBtnHoverEnd:   Qt.rgba(0.118, 0.165, 0.314, 0.5)
-    readonly property color ghostBtnPressed:    Qt.rgba(0.165, 0.329, 0.761, 0.2)
+    property color bgHeaderTop:  dark ? Qt.rgba(0.11, 0.12, 0.22, 0.96)   : Qt.rgba(0.97, 0.94, 0.89, 0.96)
+    property color bgHeaderEnd:  dark ? Qt.rgba(0.09, 0.10, 0.19, 0.98)   : Qt.rgba(0.95, 0.92, 0.86, 0.98)
+    property color bgFooterTop:  dark ? Qt.rgba(0.07, 0.10, 0.15, 0.96)   : Qt.rgba(0.95, 0.92, 0.86, 0.96)
+    property color bgFooterEnd:  dark ? Qt.rgba(0.05, 0.08, 0.12, 1.0)    : Qt.rgba(0.93, 0.90, 0.84, 1.0)
 
-    // ── Disabled Primary Button ────────────────────────────
-    readonly property color btnDisabledTop: "#1a2035"
-    readonly property color btnDisabledBot: "#151b2c"
+    // -- Button palettes --
+    // Each type has rest/hover/pressed gradients. Alpha < 1 lets background tint through.
+    property color iconBtnTop:        dark ? Qt.rgba(0.08, 0.14, 0.22, 0.82)  : Qt.rgba(0.94, 0.90, 0.82, 0.82)
+    property color iconBtnEnd:        dark ? Qt.rgba(0.06, 0.11, 0.18, 0.86)  : Qt.rgba(0.91, 0.86, 0.78, 0.86)
+    property color iconBtnHoverTop:   dark ? Qt.rgba(0.10, 0.20, 0.34, 0.90)  : Qt.rgba(0.90, 0.84, 0.72, 0.90)
+    property color iconBtnHoverEnd:   dark ? Qt.rgba(0.08, 0.16, 0.28, 0.92)  : Qt.rgba(0.86, 0.80, 0.68, 0.92)
+    property color iconBtnPressed:    dark ? Qt.rgba(0.06, 0.10, 0.18, 0.96)  : Qt.rgba(0.82, 0.76, 0.66, 0.96)
 
-    // ── Accent ──────────────────────────────────────────────
-    readonly property color accent:        "#8fb5ff"
-    readonly property color accentBright:  "#5580ff"
-    readonly property color accentDim:     "#5a6175"
-    readonly property color btnGradTop:    "#4272f5"
-    readonly property color btnGradBot:    "#335fdd"
-    readonly property color btnHoverTop:   "#5580ff"
-    readonly property color btnHoverBot:   "#4272f5"
-    readonly property color btnPressTop:   "#2f54c2"
-    readonly property color btnPressBot:   "#2648a8"
+    // Ghost buttons (Cancel, No): low-alpha fills so they recede behind primary actions.
+    property color ghostBtnTop:        dark ? Qt.rgba(0.12, 0.10, 0.22, 0.62) : Qt.rgba(0.90, 0.92, 0.84, 0.62)
+    property color ghostBtnEnd:        dark ? Qt.rgba(0.10, 0.08, 0.18, 0.72) : Qt.rgba(0.86, 0.88, 0.80, 0.72)
+    property color ghostBtnHoverTop:   dark ? Qt.rgba(0.22, 0.18, 0.44, 0.48) : Qt.rgba(0.78, 0.82, 0.68, 0.48)
+    property color ghostBtnHoverEnd:   dark ? Qt.rgba(0.18, 0.14, 0.38, 0.52) : Qt.rgba(0.74, 0.78, 0.64, 0.52)
+    property color ghostBtnPressed:    dark ? Qt.rgba(0.24, 0.18, 0.60, 0.24) : Qt.rgba(0.50, 0.56, 0.38, 0.28)
 
-    // ── Fill Armed (orange) ─────────────────────────────────
-    readonly property color fillArmedTop:      "#d06a00"
-    readonly property color fillArmedEnd:      "#b85c00"
-    readonly property color fillArmedHoverTop: "#e07700"
-    readonly property color fillArmedHoverEnd: "#c86500"
-    readonly property color fillArmedPressTop: "#b85c00"
-    readonly property color fillArmedPressEnd: "#a05000"
-    readonly property color fillArmedDot:      "#ff8800"
-    readonly property color borderFillArmed:   Qt.rgba(1.0, 0.6, 0.1, 0.4)
+    // CRUD buttons: green=add, purple=edit, red=delete, yellow-green=fill.
+    property color btnAddTop:         dark ? Qt.rgba(0.08, 0.18, 0.20, 0.65) : Qt.rgba(0.78, 0.92, 0.86, 0.78)
+    property color btnAddEnd:         dark ? Qt.rgba(0.06, 0.15, 0.17, 0.72) : Qt.rgba(0.72, 0.88, 0.80, 0.84)
+    property color btnAddHoverTop:    dark ? Qt.rgba(0.10, 0.25, 0.28, 0.70) : Qt.rgba(0.65, 0.86, 0.76, 0.82)
+    property color btnAddHoverEnd:    dark ? Qt.rgba(0.08, 0.22, 0.25, 0.76) : Qt.rgba(0.58, 0.82, 0.70, 0.86)
+    property color btnAddPressed:     dark ? Qt.rgba(0.05, 0.14, 0.16, 0.35) : Qt.rgba(0.42, 0.68, 0.56, 0.40)
+    property color btnAddText:        dark ? "#50c0b0" : "#1a7050"
+    property color btnAddTextHover:   dark ? "#68d8c8" : "#0e5838"
 
-    // ── Text ────────────────────────────────────────────────
-    readonly property color textPrimary:   "#f5f7fb"
-    readonly property color textSecondary: "#d8dce8"
-    readonly property color textMuted:     "#5a6175"
-    readonly property color textDisabled:  "#4a5068"
-    readonly property color textSubtle:    "#7a8298"
-    readonly property color textIcon:      "#99a0b8"
-    readonly property color textGhost:     "#c4cae0"
-    readonly property color textOnAccent:  "#ffffff"
-    readonly property color textPlaceholder: "#444a5e"
+    property color btnEditTop:        dark ? Qt.rgba(0.20, 0.10, 0.22, 0.65) : Qt.rgba(0.92, 0.80, 0.94, 0.78)
+    property color btnEditEnd:        dark ? Qt.rgba(0.17, 0.08, 0.19, 0.72) : Qt.rgba(0.88, 0.74, 0.90, 0.84)
+    property color btnEditHoverTop:   dark ? Qt.rgba(0.28, 0.14, 0.32, 0.70) : Qt.rgba(0.86, 0.68, 0.88, 0.82)
+    property color btnEditHoverEnd:   dark ? Qt.rgba(0.24, 0.12, 0.28, 0.76) : Qt.rgba(0.82, 0.62, 0.84, 0.86)
+    property color btnEditPressed:    dark ? Qt.rgba(0.16, 0.08, 0.18, 0.35) : Qt.rgba(0.64, 0.42, 0.66, 0.40)
+    property color btnEditText:       dark ? "#c080c8" : "#783878"
+    property color btnEditTextHover:  dark ? "#d098d8" : "#602868"
 
-    // ── Borders ─────────────────────────────────────────────
-    readonly property color borderDim:       Qt.rgba(0.561, 0.710, 1.0, 0.06)
-    readonly property color borderSoft:      Qt.rgba(0.561, 0.710, 1.0, 0.10)
-    readonly property color borderSubtle:    Qt.rgba(0.561, 0.710, 1.0, 0.12)
-    readonly property color borderInput:     Qt.rgba(0.561, 0.710, 1.0, 0.15)
-    readonly property color borderMedium:    Qt.rgba(0.561, 0.710, 1.0, 0.18)
-    readonly property color borderBtn:       Qt.rgba(0.561, 0.710, 1.0, 0.2)
-    readonly property color borderHover:     Qt.rgba(0.561, 0.710, 1.0, 0.22)
-    readonly property color borderHighlight: Qt.rgba(0.561, 0.710, 1.0, 0.25)
-    readonly property color borderBright:    Qt.rgba(0.561, 0.710, 1.0, 0.35)
-    readonly property color borderPressed:   Qt.rgba(0.357, 0.498, 0.961, 0.3)
-    readonly property color borderFocusHover: Qt.rgba(0.357, 0.498, 0.961, 0.4)
-    readonly property color borderFocus:     Qt.rgba(0.357, 0.498, 0.961, 0.7)
+    property color btnDeleteTop:        dark ? Qt.rgba(0.22, 0.10, 0.14, 0.65) : Qt.rgba(0.94, 0.80, 0.82, 0.78)
+    property color btnDeleteEnd:        dark ? Qt.rgba(0.18, 0.08, 0.12, 0.72) : Qt.rgba(0.90, 0.74, 0.76, 0.84)
+    property color btnDeleteHoverTop:   dark ? Qt.rgba(0.32, 0.14, 0.20, 0.70) : Qt.rgba(0.88, 0.66, 0.70, 0.82)
+    property color btnDeleteHoverEnd:   dark ? Qt.rgba(0.28, 0.12, 0.17, 0.76) : Qt.rgba(0.84, 0.60, 0.64, 0.86)
+    property color btnDeletePressed:    dark ? Qt.rgba(0.18, 0.08, 0.10, 0.35) : Qt.rgba(0.68, 0.42, 0.46, 0.40)
+    property color btnDeleteText:       dark ? "#c87080" : "#a03840"
+    property color btnDeleteTextHover:  dark ? "#d88898" : "#882830"
 
-    // ── Selection ───────────────────────────────────────────
-    readonly property color selectionBg:     Qt.rgba(0.2, 0.373, 0.867, 0.35)
-    readonly property color selectionHover:  Qt.rgba(0.561, 0.710, 1.0, 0.08)
-    readonly property color selectionActive: Qt.rgba(0.2, 0.373, 0.867, 0.4)
+    property color btnFillTop:        dark ? Qt.rgba(0.14, 0.18, 0.06, 0.65) : Qt.rgba(0.86, 0.92, 0.76, 0.78)
+    property color btnFillEnd:        dark ? Qt.rgba(0.12, 0.15, 0.05, 0.72) : Qt.rgba(0.82, 0.88, 0.70, 0.84)
+    property color btnFillHoverTop:   dark ? Qt.rgba(0.20, 0.26, 0.08, 0.70) : Qt.rgba(0.78, 0.86, 0.62, 0.82)
+    property color btnFillHoverEnd:   dark ? Qt.rgba(0.17, 0.22, 0.07, 0.76) : Qt.rgba(0.74, 0.82, 0.56, 0.86)
+    property color btnFillPressed:    dark ? Qt.rgba(0.10, 0.14, 0.04, 0.35) : Qt.rgba(0.56, 0.66, 0.38, 0.40)
+    property color btnFillText:       dark ? "#a0b850" : "#4a6818"
+    property color btnFillTextHover:  dark ? "#b0c860" : "#385808"
 
-    // ── Scrollbar ───────────────────────────────────────────
-    readonly property color scrollThumb: Qt.rgba(0.235, 0.275, 0.392, 0.5)
+    property color btnDisabledTop: dark ? "#1c2640" : "#dcd2c4"
+    property color btnDisabledBot: dark ? "#182038" : "#d2c8ba"
 
-    // ── Animation ──────────────────────────────────────────
+    property color accent:        dark ? "#7eaaff" : "#b86830"
+    property color accentBright:  dark ? "#5e8aff" : "#d07830"
+    property color accentDim:     dark ? "#586aa0" : "#c0a078"
+    property color accentSoft:    dark ? Qt.rgba(0.35, 0.50, 1.0, 0.14)  : Qt.rgba(0.72, 0.42, 0.18, 0.12)
+    property color accentMuted:   dark ? "#344870" : "#d0b090"
+    property color btnGradTop:    dark ? "#4878f0" : "#c07030"
+    property color btnGradBot:    dark ? "#3460d8" : "#a86028"
+    property color btnHoverTop:   dark ? "#5e8aff" : "#d88038"
+    property color btnHoverBot:   dark ? "#4878f0" : "#c07030"
+    property color btnPressTop:   dark ? "#2c50b8" : "#905828"
+    property color btnPressBot:   dark ? "#2444a0" : "#784820"
+
+    property color accent2:       dark ? "#50c8c8" : "#4a8858"
+    property color accent2Dim:    dark ? "#388888" : "#6aaa70"
+
+    // Fill-armed: opaque orange so the active-hooks state is unmissable.
+    property color fillArmedTop:      "#d87000"
+    property color fillArmedEnd:      "#c06000"
+    property color fillArmedHoverTop: "#f08000"
+    property color fillArmedHoverEnd: "#d87000"
+    property color fillArmedPressTop: "#b85c00"
+    property color fillArmedPressEnd: "#a05000"
+    property color fillArmedDot:      "#ff8c00"
+    property color borderFillArmed:   Qt.rgba(1.0, 0.58, 0.08, 0.45)
+
+    // -- Text colors --
+    // Dark = cool blue-gray, light = warm brown for cohesive temperature.
+    property color textPrimary:     dark ? "#e8ecf6" : "#2a1608"
+    property color textSecondary:   dark ? "#c0c8de" : "#4a3420"
+    property color textMuted:       dark ? "#6070a0" : "#887058"
+    property color textDisabled:    dark ? "#485070" : "#baa890"
+    property color textSubtle:      dark ? "#7888b8" : "#786048"
+    property color textIcon:        dark ? "#8898c0" : "#685840"
+    property color textGhost:       dark ? "#b8c0da" : "#584838"
+    property color textOnAccent:    "#ffffff"
+    property color textPlaceholder: dark ? "#485070" : "#b8a088"
+    property color textError:       dark ? "#ff6868" : "#c83030"
+    property color textSuccess:     dark ? "#48d878" : "#187838"
+    property color textWarning:     dark ? "#ffc040" : "#c88008"
+    property color textLink:        dark ? "#50c8c8" : "#2e7858"
+    property color textTooltip:     dark ? "#c8d0e8" : "#f0e4d0"
+    property color textBadge:       dark ? "#a0b0d0" : "#584838"
+
+    // -- Borders --
+    // Graduated alpha scale from borderDim to borderBright. Same base hue per theme.
+    property color borderDim:        dark ? Qt.rgba(0.45, 0.55, 1.0, 0.08)  : Qt.rgba(0.55, 0.40, 0.18, 0.08)
+    property color borderSoft:       dark ? Qt.rgba(0.45, 0.55, 1.0, 0.12)  : Qt.rgba(0.55, 0.40, 0.18, 0.13)
+    property color borderSubtle:     dark ? Qt.rgba(0.45, 0.55, 1.0, 0.15)  : Qt.rgba(0.55, 0.40, 0.18, 0.16)
+    property color borderInput:      dark ? Qt.rgba(0.40, 0.55, 0.90, 0.20) : Qt.rgba(0.50, 0.38, 0.18, 0.22)
+    property color borderMedium:     dark ? Qt.rgba(0.45, 0.55, 1.0, 0.22)  : Qt.rgba(0.55, 0.40, 0.18, 0.24)
+    property color borderBtn:        dark ? Qt.rgba(0.45, 0.55, 1.0, 0.24)  : Qt.rgba(0.55, 0.40, 0.18, 0.28)
+    property color borderHover:      dark ? Qt.rgba(0.45, 0.55, 1.0, 0.28)  : Qt.rgba(0.55, 0.40, 0.18, 0.34)
+    property color borderHighlight:  dark ? Qt.rgba(0.45, 0.55, 1.0, 0.32)  : Qt.rgba(0.55, 0.40, 0.18, 0.40)
+    property color borderBright:     dark ? Qt.rgba(0.45, 0.55, 1.0, 0.42)  : Qt.rgba(0.55, 0.40, 0.18, 0.48)
+    property color borderPressed:    dark ? Qt.rgba(0.35, 0.30, 0.85, 0.35) : Qt.rgba(0.55, 0.30, 0.10, 0.32)
+    property color borderFocusHover: dark ? Qt.rgba(0.35, 0.30, 0.85, 0.45) : Qt.rgba(0.55, 0.30, 0.10, 0.42)
+    property color borderFocus:      dark ? Qt.rgba(0.35, 0.30, 0.85, 0.72) : Qt.rgba(0.55, 0.30, 0.10, 0.62)
+    property color divider:          dark ? Qt.rgba(0.45, 0.55, 1.0, 0.10)  : Qt.rgba(0.55, 0.40, 0.18, 0.10)
+
+    property color rowAlt:          dark ? Qt.rgba(0.10, 0.12, 0.20, 0.32) : Qt.rgba(0.50, 0.38, 0.18, 0.05)
+
+    property color selectionBg:     dark ? Qt.rgba(0.30, 0.25, 0.85, 0.24)  : Qt.rgba(0.70, 0.55, 0.15, 0.14)
+    property color selectionHover:  dark ? Qt.rgba(0.35, 0.30, 0.90, 0.10)  : Qt.rgba(0.70, 0.55, 0.15, 0.07)
+    property color selectionActive: dark ? Qt.rgba(0.30, 0.25, 0.85, 0.32)  : Qt.rgba(0.70, 0.55, 0.15, 0.22)
+
+    property color scrollThumb:      dark ? Qt.rgba(0.22, 0.28, 0.48, 0.48) : Qt.rgba(0.55, 0.42, 0.22, 0.26)
+    property color scrollThumbHover: dark ? Qt.rgba(0.28, 0.35, 0.58, 0.62) : Qt.rgba(0.55, 0.42, 0.22, 0.40)
+
+    property color rippleColor: dark ? Qt.rgba(1.0, 1.0, 1.0, 0.25) : Qt.rgba(0.0, 0.0, 0.0, 0.18)
+
+    // Background blobs: three hues at 3-5% alpha. Dark gets slightly more opacity.
+    property color blobColor1: dark ? Qt.rgba(0.30, 0.25, 0.85, 0.045) : Qt.rgba(0.72, 0.50, 0.15, 0.038)
+    property color blobColor2: dark ? Qt.rgba(0.10, 0.55, 0.65, 0.040) : Qt.rgba(0.35, 0.58, 0.28, 0.035)
+    property color blobColor3: dark ? Qt.rgba(0.60, 0.15, 0.50, 0.035) : Qt.rgba(0.60, 0.32, 0.18, 0.032)
+
+    // Selection glow: fades from selectionGlow to transparent at row edges.
+    property color selectionGlow:     dark ? Qt.rgba(0.35, 0.30, 0.90, 0.35) : Qt.rgba(0.72, 0.55, 0.18, 0.30)
+    property color selectionGlowEdge: dark ? Qt.rgba(0.35, 0.30, 0.90, 0.0)  : Qt.rgba(0.72, 0.55, 0.18, 0.0)
+    property color selectionStripe:   dark ? Qt.rgba(0.50, 0.45, 1.0, 0.55)  : Qt.rgba(0.72, 0.55, 0.18, 0.50)
+
+    property color shadow: dark ? Qt.rgba(0, 0, 0, 0.45) : Qt.rgba(0.28, 0.18, 0.08, 0.16)
+
+    // -- Animation timing --
     readonly property int hoverDuration:  150
     readonly property int pressDuration:  80
 
-    // ── Dimensions ──────────────────────────────────────────
     readonly property int radiusSmall:  8
     readonly property int radiusMedium: 10
     readonly property int radiusLarge:  12
@@ -129,7 +212,7 @@ QtObject {
     readonly property int spacingLarge:  20
     readonly property int spacingXL:     36
 
-    // ── Fonts ───────────────────────────────────────────────
+    // Consolas ships with every Windows install.
     readonly property string fontFamily:     _interFont.name !== "" ? _interFont.name : "Inter"
     readonly property string fontMono:       "Consolas"
     readonly property string fontEmoji:      "Segoe UI Emoji"
@@ -141,7 +224,7 @@ QtObject {
     readonly property int iconSizeSmall:     px(13)
     readonly property int iconSizeMedium:    px(15)
 
-    // ── Icon SVG Paths ──────────────────────────────────
+    // SVG icon paths. SvgIcon.qml wraps IconImage for runtime recoloring.
     readonly property string iconLock:         "qrc:/qt/qml/sage/assets/svgs/lock.svg"
     readonly property string iconLockOpen:     "qrc:/qt/qml/sage/assets/svgs/lock-open.svg"
     readonly property string iconPlus:         "qrc:/qt/qml/sage/assets/svgs/plus.svg"
@@ -162,4 +245,10 @@ QtObject {
     readonly property string iconEye:          "qrc:/qt/qml/sage/assets/svgs/eye.svg"
     readonly property string iconEyeSlash:     "qrc:/qt/qml/sage/assets/svgs/eye-slash.svg"
     readonly property string iconCrosshairs:   "qrc:/qt/qml/sage/assets/svgs/crosshairs.svg"
+    readonly property string iconSun:          "qrc:/qt/qml/sage/assets/svgs/sun-bright.svg"
+    readonly property string iconXmark:        "qrc:/qt/qml/sage/assets/svgs/xmark.svg"
+    readonly property string iconMoon:         "qrc:/qt/qml/sage/assets/svgs/moon.svg"
+    readonly property string iconTriangleExclamation: "qrc:/qt/qml/sage/assets/svgs/triangle-exclamation.svg"
+    readonly property string iconCircleInfo:  "qrc:/qt/qml/sage/assets/svgs/circle-info.svg"
+    readonly property string iconCircleCheck: "qrc:/qt/qml/sage/assets/svgs/circle-check.svg"
 }

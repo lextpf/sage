@@ -11,6 +11,7 @@
 
 #include "Cryptography.h"
 #include "FileOperations.h"
+#include "Logging.h"
 #include "Utils.h"
 
 #include <QtCore/QString>
@@ -97,9 +98,13 @@ std::vector<VaultRecord> loadVaultIndex(
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& password
 )
 {
+    qCInfo(logVault) << "loadVaultIndex:" << QFileInfo(vaultPath).fileName();
     std::ifstream in(qstringToStd(vaultPath), std::ios::in);
     if (!in)
+    {
+        qCWarning(logVault) << "loadVaultIndex: cannot open file";
         throw std::runtime_error("Cannot open vault file");
+    }
 
     std::vector<VaultRecord> records;
     std::string line;
@@ -145,8 +150,14 @@ std::vector<VaultRecord> loadVaultIndex(
     }
 
     if (decryptAttempted > 0 && records.empty())
+    {
+        qCWarning(logVault) << "loadVaultIndex: wrong password (parsed"
+                            << decryptAttempted << "record(s), 0 decrypted)";
         throw std::runtime_error("Wrong password");
+    }
 
+    qCInfo(logVault) << "loadVaultIndex: parsed" << records.size()
+                     << "record(s) from" << decryptAttempted << "line(s)";
     return records;
 }
 
@@ -156,9 +167,14 @@ bool saveVaultV2(
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& password
 )
 {
+    qCInfo(logVault) << "saveVaultV2:" << QFileInfo(vaultPath).fileName()
+                     << "records=" << records.size();
     std::ofstream out(qstringToStd(vaultPath), std::ios::out | std::ios::trunc);
     if (!out)
+    {
+        qCWarning(logVault) << "saveVaultV2: cannot open file for writing";
         return false;
+    }
 
     for (const auto& rec : records)
     {
@@ -179,7 +195,12 @@ bool saveVaultV2(
         out << sage::utils::to_hex(platformBlob) << "\t" << sage::utils::to_hex(rec.m_EncryptedBlob) << "\n";
     }
 
-    return out.good();
+    bool ok = out.good();
+    if (ok)
+        qCInfo(logVault) << "saveVaultV2: success";
+    else
+        qCWarning(logVault) << "saveVaultV2: write error";
+    return ok;
 }
 
 DecryptedCredential decryptCredentialOnDemand(
@@ -187,6 +208,7 @@ DecryptedCredential decryptCredentialOnDemand(
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& password
 )
 {
+    qCDebug(logVault) << "decryptCredentialOnDemand: platform=" << record.m_Platform.c_str();
     auto plainBytes = sage::Cryptography::decryptPacket(
         std::span<const unsigned char>(record.m_EncryptedBlob), password);
 
@@ -225,6 +247,7 @@ VaultRecord encryptCredential(
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& masterPassword
 )
 {
+    qCDebug(logVault) << "encryptCredential: platform=" << platform.c_str();
     std::string userUtf8 = wcharToUtf8(username.data(), username.size());
     std::string passUtf8 = wcharToUtf8(password.data(), password.size());
 
@@ -261,6 +284,7 @@ int encryptDirectory(
     std::string path = qstringToStd(dirPath);
     int count = 0;
 
+    qCInfo(logVault) << "encryptDirectory:" << dirPath;
     try
     {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(path))
@@ -290,10 +314,12 @@ int encryptDirectory(
             }
         }
     }
-    catch (const std::exception&)
+    catch (const std::exception& e)
     {
+        qCWarning(logVault) << "encryptDirectory: error:" << e.what();
     }
 
+    qCInfo(logVault) << "encryptDirectory: encrypted" << count << "file(s)";
     return count;
 }
 
@@ -305,6 +331,7 @@ int decryptDirectory(
     std::string path = qstringToStd(dirPath);
     int count = 0;
 
+    qCInfo(logVault) << "decryptDirectory:" << dirPath;
     try
     {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(path))
@@ -328,10 +355,12 @@ int decryptDirectory(
             }
         }
     }
-    catch (const std::exception&)
+    catch (const std::exception& e)
     {
+        qCWarning(logVault) << "decryptDirectory: error:" << e.what();
     }
 
+    qCInfo(logVault) << "decryptDirectory: decrypted" << count << "file(s)";
     return count;
 }
 

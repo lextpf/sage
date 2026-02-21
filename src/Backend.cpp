@@ -3,6 +3,7 @@
 #include "Backend.h"
 #include "Clipboard.h"
 #include "FillController.h"
+#include "Logging.h"
 #include "VaultModel.h"
 
 #include <QtCore/QString>
@@ -17,9 +18,9 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <dwmapi.h>
 
 #include <functional>
-#include <iostream>
 #include <string>
 
 #include "tess_ocr_api.h"
@@ -36,6 +37,7 @@ Backend::qstringToSecureWide(const QString& qstr)
     // Intermediate std::wstring is unavoidable; Qt has no direct-to-locked-page API.
     std::wstring wstr = qstr.toStdWString();
     result.s.assign(wstr.begin(), wstr.end());
+    SecureZeroMemory(wstr.data(), wstr.size() * sizeof(wchar_t));
     return result;
 }
 
@@ -101,6 +103,11 @@ VaultListModel* Backend::vaultModel() const { return m_Model; }
 
 bool Backend::vaultLoaded() const { return !m_CurrentVaultPath.isEmpty() || !m_Records.empty(); }
 
+QString Backend::vaultFileName() const {
+    if (m_CurrentVaultPath.isEmpty()) return {};
+    return QFileInfo(m_CurrentVaultPath).fileName();
+}
+
 bool Backend::hasSelection() const { return m_SelectedIndex >= 0; }
 
 int Backend::selectedIndex() const { return m_SelectedIndex; }
@@ -154,7 +161,7 @@ void Backend::submitPassword(const QString& password)
     auto wide = qstringToSecureWide(password);
     m_Password = std::move(wide);
     m_PasswordSet = true;
-    std::cerr << "[sage] password set via manual entry\n";
+    qCInfo(logBackend) << "password set via manual entry";
     setStatus("Password set");
     emit passwordSetChanged();
 
@@ -182,16 +189,16 @@ void Backend::requestOcrCapture()
     // Let the OCR window come to the foreground over our window.
     AllowSetForegroundWindow(ASFW_ANY);
 
-    std::cerr << "[sage] starting webcam OCR capture...\n";
+    qCInfo(logBackend) << "starting webcam OCR capture";
     char buf[512] = {};
     int rc = tess_ocr_capture_from_webcam(nullptr, 0, buf, sizeof(buf));
-    std::cerr << "[sage] webcam OCR returned rc=" << rc
-              << " len=" << strlen(buf) << "\n";
+    qCInfo(logBackend) << "webcam OCR returned rc=" << rc
+                       << "len=" << strlen(buf);
 
     if (rc != TESS_OCR_OK || buf[0] == '\0')
     {
         SecureZeroMemory(buf, sizeof(buf));
-        std::cerr << "[sage] password NOT set (OCR failed or empty)\n";
+        qCWarning(logBackend) << "password NOT set (OCR failed or empty)";
         setStatus("OCR capture failed or cancelled");
         emit ocrCaptureFinished(false);
         return;
@@ -207,7 +214,7 @@ void Backend::requestOcrCapture()
     }
     SecureZeroMemory(buf, sizeof(buf));
     m_PasswordSet = true;
-    std::cerr << "[sage] password set via OCR (" << (wlen - 1) << " chars)\n";
+    qCInfo(logBackend) << "password set via OCR (" << (wlen - 1) << "chars)";
     setStatus("Password set via webcam OCR");
     emit passwordSetChanged();
     emit ocrCaptureFinished(true);
@@ -315,10 +322,13 @@ QString Backend::openFolderDialog(const QString& title)
 
 void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
 {
+    qCInfo(logBackend) << "loadVaultFromPath:" << QFileInfo(filePath).fileName()
+                       << "autoLoad=" << isAutoLoad;
     try
     {
         m_Records = sage::loadVaultIndex(filePath, m_Password);
         m_CurrentVaultPath = filePath;
+        qCInfo(logBackend) << "vault loaded:" << m_Records.size() << "record(s)";
         refreshModel();
         if (isAutoLoad)
             setStatus(QString("Auto-loaded %1 account(s) from %2")
@@ -326,11 +336,13 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
         else
             setStatus(QString("Loaded %1 account(s) from vault").arg(m_Records.size()));
         emit vaultLoadedChanged();
+        emit vaultFileNameChanged();
     }
     catch (const std::runtime_error& e)
     {
         if (std::string(e.what()) == "Wrong password")
         {
+            qCWarning(logBackend) << "wrong password for vault";
             sage::Cryptography::cleanseString(m_Password);
             m_PasswordSet = false;
             emit passwordSetChanged();
@@ -341,6 +353,7 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
             emit passwordRetryRequired("Wrong password - try again.");
             return;
         }
+        qCWarning(logBackend) << "vault load error:" << e.what();
         emit errorOccurred("Error", QString("Failed to load vault: %1").arg(e.what()));
         setStatus("Failed to load vault");
     }
@@ -390,6 +403,8 @@ void Backend::saveVault()
     if (!fileName.endsWith(".sage", Qt::CaseInsensitive))
         fileName += ".sage";
 
+    qCInfo(logBackend) << "saveVault:" << QFileInfo(fileName).fileName()
+                       << "records=" << m_Records.size();
     if (sage::saveVaultV2(fileName, m_Records, m_Password))
     {
         m_CurrentVaultPath = fileName;
@@ -401,11 +416,14 @@ void Backend::saveVault()
         std::erase_if(m_Records, [](const sage::VaultRecord& r) { return r.m_Deleted; });
 
         refreshModel();
+        qCInfo(logBackend) << "vault saved:" << m_Records.size() << "record(s)";
         setStatus(QString("Saved %1 account(s) to vault").arg(m_Records.size()));
         emit vaultLoadedChanged();
+        emit vaultFileNameChanged();
     }
     else
     {
+        qCWarning(logBackend) << "vault save failed";
         emit errorOccurred("Error", "Failed to save vault file");
         setStatus("Failed to save vault");
     }
@@ -413,11 +431,13 @@ void Backend::saveVault()
 
 void Backend::unloadVault()
 {
+    qCInfo(logBackend) << "unloadVault: clearing" << m_Records.size() << "record(s)";
     m_Records.clear();
     m_CurrentVaultPath.clear();
     refreshModel();
     setStatus("Vault unloaded");
     emit vaultLoadedChanged();
+    emit vaultFileNameChanged();
 }
 
 void Backend::addAccount(const QString& service,
@@ -451,9 +471,12 @@ void Backend::addAccount(const QString& service,
     sage::Cryptography::cleanseString(secUsername, secPassword);
 
     m_Records.push_back(std::move(newRecord));
+    qCInfo(logBackend) << "addAccount: service=" << service
+                       << "total=" << m_Records.size();
     refreshModel();
     setStatus("Account added");
     emit vaultLoadedChanged();
+    emit vaultFileNameChanged();
 }
 
 void Backend::editAccount(int index,
@@ -479,6 +502,7 @@ void Backend::editAccount(int index,
 
     sage::Cryptography::cleanseString(secUsername, secPassword);
 
+    qCInfo(logBackend) << "editAccount: index=" << index << "service=" << service;
     refreshModel();
     setStatus("Account updated");
 }
@@ -492,6 +516,7 @@ void Backend::deleteAccount(int index)
     // immediately, but keep it around until saveVault() commits to disk.
     m_Records[index].m_Deleted = true;
     m_Records[index].m_Dirty = true;
+    qCInfo(logBackend) << "deleteAccount: index=" << index << "(soft-delete)";
     refreshModel();
     setStatus("Account deleted");
 
@@ -506,12 +531,15 @@ void Backend::deleteAccount(int index)
             break;
         }
     }
-    if (!anyVisible)
+    if (!anyVisible) {
         emit vaultLoadedChanged();
+        emit vaultFileNameChanged();
+    }
 }
 
 QVariantMap Backend::decryptAccountForEdit(int index)
 {
+    qCDebug(logBackend) << "decryptAccountForEdit: index=" << index;
     QVariantMap result;
     if (index < 0 || index >= (int)m_Records.size())
         return result;
@@ -538,6 +566,7 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             }
             catch (const std::exception& e)
             {
+                qCWarning(logBackend) << "decryptAccountForEdit (deferred): decrypt failed:" << e.what();
                 emit errorOccurred("Error",
                     QString("Failed to decrypt credential: %1").arg(e.what()));
             }
@@ -563,6 +592,7 @@ QVariantMap Backend::decryptAccountForEdit(int index)
     }
     catch (const std::exception& e)
     {
+        qCWarning(logBackend) << "decryptAccountForEdit: decrypt failed:" << e.what();
         emit errorOccurred("Error",
             QString("Failed to decrypt credential: %1").arg(e.what()));
     }
@@ -757,6 +787,7 @@ void Backend::encryptDirectory()
         return;
 
     int count = sage::encryptDirectory(dirPath, m_Password);
+    qCInfo(logBackend) << "encryptDirectory: encrypted" << count << "file(s)";
     setStatus(QString("Encrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Encrypted %1 file(s) in directory").arg(count));
 }
@@ -775,6 +806,7 @@ void Backend::decryptDirectory()
         return;
 
     int count = sage::decryptDirectory(dirPath, m_Password);
+    qCInfo(logBackend) << "decryptDirectory: decrypted" << count << "file(s)";
     setStatus(QString("Decrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Decrypted %1 file(s) in directory").arg(count));
 }
@@ -809,8 +841,12 @@ void Backend::autoLoadVault()
     }
 
     if (foundVaultPath.isEmpty())
+    {
+        qCInfo(logBackend) << "autoLoadVault: no vault found";
         return;
+    }
 
+    qCInfo(logBackend) << "autoLoadVault: found" << QFileInfo(foundVaultPath).fileName();
     if (!m_PasswordSet)
     {
         // Capture the discovered path so the deferred action can load it
@@ -839,6 +875,7 @@ void Backend::armFill(int index)
     if (m_Busy)
         return;
 
+    qCInfo(logBackend) << "armFill: index=" << index;
     m_FillController->arm(index, m_Records, m_Password);
     setStatus("Fill armed - Ctrl+Click target field");
 
@@ -853,11 +890,13 @@ void Backend::armFill(int index)
 
 void Backend::cancelFill()
 {
+    qCInfo(logBackend) << "cancelFill";
     m_FillController->cancel();
 }
 
 void Backend::cleanup()
 {
+    qCInfo(logBackend) << "cleanup: starting";
     m_FillController->cancel();
 
     // If the user configured an auto-encrypt directory, encrypt it now
@@ -867,10 +906,12 @@ void Backend::cleanup()
         try
         {
             int count = sage::encryptDirectory(m_AutoEncryptDirectory, m_Password);
+            qCInfo(logBackend) << "cleanup: auto-encrypted" << count << "file(s)";
             setStatus(QString("Auto-encrypted %1 file(s) in directory").arg(count));
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
+            qCWarning(logBackend) << "cleanup: auto-encrypt failed:" << e.what();
         }
     }
 
@@ -882,6 +923,44 @@ void Backend::cleanup()
         m_PasswordSet = false;
         emit passwordSetChanged();
     }
+}
+
+void Backend::updateWindowTheme(bool dark)
+{
+    auto windows = QGuiApplication::topLevelWindows();
+    if (windows.isEmpty())
+        return;
+
+    HWND hwnd = (HWND)windows.first()->winId();
+    if (!hwnd)
+        return;
+
+    // Remove window icon from title bar
+    static bool iconRemoved = false;
+    if (!iconRemoved) {
+        // Clear class-level icons (Qt default fallback)
+        SetClassLongPtr(hwnd, GCLP_HICON, 0);
+        SetClassLongPtr(hwnd, GCLP_HICONSM, 0);
+        // Clear instance-level icons
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, 0);
+        SendMessage(hwnd, WM_SETICON, ICON_BIG, 0);
+        // Add dialog frame style to suppress icon area
+        LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle | WS_EX_DLGMODALFRAME);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        iconRemoved = true;
+    }
+
+    BOOL darkMode = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+
+    COLORREF captionColor = dark ? RGB(18, 24, 38) : RGB(245, 239, 230);
+    DwmSetWindowAttribute(hwnd, 34, &captionColor, sizeof(captionColor));
+    DwmSetWindowAttribute(hwnd, 35, &captionColor, sizeof(captionColor));
+
+    COLORREF textColor = dark ? RGB(240, 242, 248) : RGB(44, 24, 16);
+    DwmSetWindowAttribute(hwnd, 36, &textColor, sizeof(textColor));
 }
 
 } // namespace sage

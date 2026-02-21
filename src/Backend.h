@@ -54,6 +54,7 @@ class Backend : public QObject
 
     Q_PROPERTY(VaultListModel* vaultModel READ vaultModel CONSTANT)
     Q_PROPERTY(bool vaultLoaded READ vaultLoaded NOTIFY vaultLoadedChanged)
+    Q_PROPERTY(QString vaultFileName READ vaultFileName NOTIFY vaultFileNameChanged)
     Q_PROPERTY(bool hasSelection READ hasSelection NOTIFY selectionChanged)
     Q_PROPERTY(int selectedIndex READ selectedIndex WRITE setSelectedIndex NOTIFY selectionChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
@@ -77,6 +78,9 @@ public:
 
     /// @brief Check whether a vault file is currently loaded.
     bool vaultLoaded() const;
+
+    /// @brief Return the filename (without path) of the loaded vault, or empty.
+    QString vaultFileName() const;
 
     /// @brief Check whether a row is currently selected.
     bool hasSelection() const;
@@ -279,8 +283,11 @@ public:
      */
     Q_INVOKABLE void cancelFill();
 
+    Q_INVOKABLE void updateWindowTheme(bool dark);
+
 signals:
     void vaultLoadedChanged();          ///< Vault open/close state changed.
+    void vaultFileNameChanged();        ///< Vault file name changed.
     void selectionChanged();            ///< Selected row index changed.
     void statusTextChanged();           ///< Status bar text updated.
     void passwordSetChanged();          ///< Master password set or cleared.
