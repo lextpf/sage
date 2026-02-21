@@ -35,6 +35,7 @@
 > **Windows 10/11 Only** - sage enforces Windows-specific security mitigations and will not build on other platforms.
 >
 > - For best protection, enable `SeLockMemoryPrivilege` via Group Policy (`gpedit.msc` -> Local Policies -> User Rights Assignment -> Lock pages in memory).
+> - UI icons use [Font Awesome Pro 7.2](https://fontawesome.com/) SVGs, which are **not included** in this repository due to their commercial license. You must supply your own `assets/svgs/` from a valid Font Awesome Pro subscription.
 
 ```
 /*  ============================================================================================  *
@@ -330,5 +331,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [vcpkg](https://github.com/microsoft/vcpkg) - C++ package manager
 - [Doxide](https://github.com/lawmurray/doxide) - API documentation generator
 - [MkDocs Material](https://squidfunk.github.io/mkdocs-material/) - Documentation theme
+- [Font Awesome Pro 7.2](https://fontawesome.com/) - UI icons
 - [Claude](https://claude.ai/) - AI coding assistant by Anthropic
 - [Codex](https://openai.com/index/openai-codex/) - AI coding assistant by OpenAI
