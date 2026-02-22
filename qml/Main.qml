@@ -57,12 +57,17 @@ ApplicationWindow {
             passwordDlg.open();
         }
 
-        // Fall back to manual password dialog on OCR failure.
+        // Show error in the already-open dialog on OCR failure.
         function onOcrCaptureFinished(success) {
             if (!success) {
-                passwordDlg.errorMessage = "";
-                passwordDlg.open();
+                passwordDlg.errorMessage = "OCR capture failed or cancelled.";
             }
+        }
+
+        // OCR captured text - fill the password field (dialog is still open).
+        function onOcrTextReady(text) {
+            passwordDlg.errorMessage = "";
+            passwordDlg.fillPassword(text);
         }
 
         // Credentials are encrypted at rest; Backend decrypts and sends data for editing.

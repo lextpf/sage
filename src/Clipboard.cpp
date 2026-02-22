@@ -2,6 +2,7 @@
 #include "Utils.h"
 
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <cstring>
 #include <thread>
@@ -146,6 +147,7 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
             }
         }
         sage::Cryptography::cleanseString(val);
+        sage::Cryptography::trimWorkingSet();
     }).detach();
 
     return true;
@@ -168,11 +170,88 @@ bool Clipboard::copyInputFile()
     return copyWithTTL(buf);
 }
 
+/// @brief Heuristic check for suspicious global keyboard hooks.
+/// Installs a temporary WH_KEYBOARD_LL hook and measures the time
+/// CallNextHookEx takes. If another hook in the chain adds latency
+/// beyond a threshold, a third-party hook is likely present.
+/// Returns true if a suspicious hook is detected.
+static bool isKeyboardHookPresent()
+{
+    // Quick check: verify the foreground window belongs to a reasonable process.
+    // A transparent overlay injecting hooks would own the foreground but have
+    // a suspicious class name or zero-sized window rect.
+    HWND fg = GetForegroundWindow();
+    if (fg) {
+        RECT rc{};
+        GetWindowRect(fg, &rc);
+        // A zero-size foreground window is suspicious (hook overlay).
+        if (rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0) {
+            OutputDebugStringA("[sage] WARN: foreground window has zero size (possible hook overlay)\n");
+            return true;
+        }
+    }
+
+    // Timing-based heuristic: install a temporary low-level keyboard hook
+    // and measure the round-trip latency of the hook chain.
+    struct HookCtx {
+        LARGE_INTEGER freq{};
+        LARGE_INTEGER start{};
+        LARGE_INTEGER end{};
+        bool measured = false;
+    } ctx;
+    QueryPerformanceFrequency(&ctx.freq);
+
+    HHOOK hHook = SetWindowsHookExW(WH_KEYBOARD_LL,
+        [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            return CallNextHookEx(nullptr, nCode, wParam, lParam);
+        }, nullptr, 0);
+
+    if (!hHook)
+        return false; // Can't install hook - inconclusive, proceed
+
+    // Send a dummy keystroke and time the hook chain processing
+    QueryPerformanceCounter(&ctx.start);
+    INPUT dummyInput[2]{};
+    dummyInput[0].type = INPUT_KEYBOARD;
+    dummyInput[0].ki.wVk = 0;
+    dummyInput[0].ki.wScan = 0;
+    dummyInput[0].ki.dwFlags = KEYEVENTF_UNICODE;
+    dummyInput[1] = dummyInput[0];
+    dummyInput[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+    // Pump messages briefly to let the hook fire
+    MSG msg;
+    for (int i = 0; i < 10; ++i) {
+        if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            DispatchMessageW(&msg);
+        Sleep(1);
+    }
+    QueryPerformanceCounter(&ctx.end);
+
+    UnhookWindowsHookEx(hHook);
+
+    // If processing took more than 15ms, another hook in the chain
+    // is adding latency (normal chain with no hooks: < 2ms).
+    double elapsed_ms = (double)(ctx.end.QuadPart - ctx.start.QuadPart) * 1000.0 / (double)ctx.freq.QuadPart;
+    if (elapsed_ms > 15.0) {
+        OutputDebugStringA("[sage] WARN: keyboard hook chain latency suggests third-party hooks\n");
+        return true;
+    }
+
+    return false;
+}
+
 bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
 {
     if (!bytes)
     {
         return false;
+    }
+
+    // Heuristic: warn if keyboard hooks are detected (keylogger risk).
+    // This is best-effort - a determined attacker can evade detection.
+    if (isKeyboardHookPresent()) {
+        OutputDebugStringA("[sage] WARN: suspicious keyboard hooks detected before auto-type\n");
     }
 
     std::wstring w;

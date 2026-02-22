@@ -26,6 +26,26 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /DNDEBUG")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /Zi /RTC1")
+
+    # --- Security hardening flags ---
+    # Control Flow Guard - prevents ROP/JOP attacks
+    add_compile_options(/guard:cf)
+    add_link_options(/guard:cf)
+
+    # Spectre v1 mitigations (requires Spectre-mitigated libs from VS installer)
+    option(ENABLE_SPECTRE "Enable /Qspectre mitigation (requires Spectre libs)" OFF)
+    if(ENABLE_SPECTRE)
+        add_compile_options(/Qspectre)
+    endif()
+
+    # CET Shadow Stack (Intel CET hardware enforcement)
+    add_link_options(/CETCOMPAT)
+
+    # High-entropy ASLR (64-bit)
+    add_link_options(/HIGHENTROPYVA)
+
+    # Explicit DEP and ASLR (usually default, but be explicit)
+    add_link_options(/NXCOMPAT /DYNAMICBASE)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
@@ -55,6 +75,7 @@ set(WINDOWS_LIBS
     Secur32
     Advapi32
     Comdlg32
+    Crypt32
     dwmapi
 )
 

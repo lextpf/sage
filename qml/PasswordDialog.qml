@@ -13,11 +13,17 @@ Popup {
     signal accepted(string password)
     signal ocrRequested()
 
+    /// Set the password field text (e.g. from OCR) without closing the dialog.
+    function fillPassword(text) {
+        passwordField.text = text;
+        passwordField.forceActiveFocus();
+    }
+
     modal: true
     anchors.centerIn: parent
     width: 420
     padding: 0
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: Popup.NoAutoClose
 
     enter: Transition {
         ParallelAnimation {
@@ -175,53 +181,12 @@ Popup {
             Layout.rightMargin: 24
             spacing: Theme.spacingSmall
 
-            // Cancel button (left)
-            Button {
-                id: cancelButton
-                text: "Cancel"
-                onClicked: root.close()
-
-                HoverHandler { id: pwCancelHover; cursorShape: Qt.PointingHandCursor }
-
-                scale: pressed ? 0.97 : 1.0
-                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
-
-                contentItem: Text {
-                    text: parent.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Medium
-                    color: cancelButton.hovered ? Theme.textPrimary : Theme.textGhost
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-                }
-                background: Rectangle {
-                    implicitWidth: 90
-                    implicitHeight: 34
-                    radius: Theme.radiusMedium
-                    gradient: Gradient {
-                        GradientStop { position: 0; color: cancelButton.pressed ? Theme.ghostBtnPressed : cancelButton.hovered ? Theme.ghostBtnHoverTop : Theme.ghostBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                        GradientStop { position: 1; color: cancelButton.pressed ? Theme.ghostBtnPressed : cancelButton.hovered ? Theme.ghostBtnHoverEnd : Theme.ghostBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                    }
-                    border.width: 1
-                    border.color: cancelButton.pressed ? Theme.borderPressed
-                                : cancelButton.hovered ? Theme.borderFocusHover
-                                : Theme.borderSubtle
-                    Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
-
-                    RippleEffect { id: pwCancelRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
-                }
-                onPressed: pwCancelRipple.trigger(pwCancelHover.point.position.x, pwCancelHover.point.position.y)
-            }
-
             Item { Layout.fillWidth: true }
 
-            // OCR button. Closes dialog first; re-opened on capture failure.
+            // OCR button. Dialog stays open; field is filled when capture completes.
             Button {
                 id: ocrButton
                 onClicked: {
-                    root.close();
                     root.ocrRequested();
                 }
 

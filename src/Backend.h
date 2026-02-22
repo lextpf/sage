@@ -317,6 +317,10 @@ signals:
     /// @param success True if text was captured, false on error/cancel.
     void ocrCaptureFinished(bool success);
 
+    /// @brief OCR captured text ready to pre-fill the password dialog.
+    /// @param text The captured password text (not yet confirmed).
+    void ocrTextReady(const QString& text);
+
     /// @brief Decrypted account data is ready for the edit dialog.
     /// @param data QVariantMap with "service", "username", "password" keys.
     void editAccountReady(const QVariantMap& data);
@@ -406,6 +410,7 @@ private:
     FillController*                     m_FillController = nullptr;  ///< Auto-fill hook controller.
 
     sage::basic_secure_string<wchar_t>  m_Password;                  ///< Master password in locked memory.
+    sage::DPAPIGuard<sage::basic_secure_string<wchar_t>> m_DPAPIGuard; ///< DPAPI in-memory encryption for m_Password.
     bool                                m_PasswordSet    = false;    ///< Whether master password has been entered.
 
     QString                             m_CurrentVaultPath;          ///< Path to the currently loaded vault file.

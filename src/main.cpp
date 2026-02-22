@@ -208,10 +208,14 @@ int main(int argc, char* argv[]) {
     const bool useUIMode = uiMode || (!cliMode && !streamMode);
     const bool allowDynamicCode = useUIMode && !importMode;
 
+    sage::Cryptography::detectDebugger();
+
     if (!sage::Cryptography::setSecureProcessMitigations(allowDynamicCode)) return -1;
     if (sage::Cryptography::isRemoteSession()) return -1;
 
     sage::Cryptography::hardenHeap();
+    sage::Cryptography::hardenProcessAccess();
+    sage::Cryptography::disableCrashDumps();
     if (!sage::Cryptography::tryEnableLockPrivilege()) {
         char* username = nullptr;
         size_t len = 0;
@@ -328,8 +332,10 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: Failed to read master password\n";
             return 1;
         }
+        sage::DPAPIGuard<sage::basic_secure_string<wchar_t>> importDpapi(&masterPassword);
 
-        // Encrypt each entry
+        // Encrypt each entry - unprotect for the duration of encryption
+        importDpapi.unprotect();
         std::vector<sage::VaultRecord> records;
         records.reserve(entries.size());
         for (const auto& [platform, user, pass] : entries) {
@@ -383,9 +389,11 @@ int main(int argc, char* argv[]) {
 
     try {
         sage::basic_secure_string<wchar_t> password = sage::readPasswordSecureDesktop();
+        sage::DPAPIGuard<sage::basic_secure_string<wchar_t>> dpapi(&password);
 
         // Streaming mode: process stdin -> stdout
         if (streamMode) {
+            dpapi.unprotect();
             bool success = false;
             if (encryptMode) {
                 success = sage::FileOperations::streamEncrypt(password);
@@ -406,7 +414,9 @@ int main(int argc, char* argv[]) {
                 const auto& flines = fileBatch.first;
                 bool funcensored = fileBatch.second;
                 if (!flines.empty()) {
+                    dpapi.unprotect();
                     sage::FileOperations::processBatch(flines, funcensored, password);
+                    dpapi.reprotect();
                     std::cout << "\n";
                 }
             }
@@ -434,8 +444,11 @@ int main(int argc, char* argv[]) {
                                 if (_stricmp(line.c_str(), ".") == 0 || sage::utils::isDirectoryA(line.c_str()) || sage::utils::fileExistsA(line.c_str()))
                                     yes = true;
                             }
-                            if (yes)
+                            if (yes) {
+                                dpapi.unprotect();
                                 sage::FileOperations::processBatch(flines, funcensored, password);
+                                dpapi.reprotect();
+                            }
                             return 0;
                         }
                     }
@@ -447,7 +460,9 @@ int main(int argc, char* argv[]) {
 
             if (lines.empty()) break;
 
+            dpapi.unprotect();
             sage::FileOperations::processBatch(lines, uncensored, password);
+            dpapi.reprotect();
         }
         sage::Cryptography::cleanseString(password);
         if (!streamMode) {

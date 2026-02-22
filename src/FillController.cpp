@@ -311,6 +311,12 @@ void FillController::performType()
             return;
         }
 
+        // Warn: auto-fill sends real keystrokes through the normal input
+        // pipeline. If third-party keyboard hooks are present, credentials
+        // could be intercepted. The master password is protected by the
+        // secure desktop dialog, but SendInput-based fill is inherently exposed.
+        qCDebug(logFill) << "performType: note - auto-fill keystrokes pass through global hook chain";
+
         // Type the selected field via synthesized keystrokes (SendInput).
         bool success = false;
         if (target == TypeTarget::Username)
@@ -322,8 +328,10 @@ void FillController::performType()
             success = sage::typeSecret(cred.m_Password.data(), (int)cred.m_Password.size(), 0);
         }
 
-        // Wipe plaintext immediately after typing.
+        // Wipe plaintext immediately after typing, then trim working set
+        // so the plaintext doesn't linger in physical RAM.
         cred.cleanse();
+        sage::Cryptography::trimWorkingSet();
 
         if (!success)
         {

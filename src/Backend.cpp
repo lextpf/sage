@@ -61,6 +61,7 @@ Backend::Backend(QObject* parent)
     connect(m_FillController, &FillController::fillCompleted,
             this, [this](const QString& msg)
     {
+        m_DPAPIGuard.reprotect();
         setStatus(msg);
         for (QWindow* w : QGuiApplication::topLevelWindows())
         {
@@ -72,6 +73,7 @@ Backend::Backend(QObject* parent)
     connect(m_FillController, &FillController::fillError,
             this, [this](const QString& msg)
     {
+        m_DPAPIGuard.reprotect();
         emit errorOccurred("Fill Error", msg);
         setStatus("Fill failed");
         for (QWindow* w : QGuiApplication::topLevelWindows())
@@ -84,6 +86,7 @@ Backend::Backend(QObject* parent)
     connect(m_FillController, &FillController::fillCancelled,
             this, [this]()
     {
+        m_DPAPIGuard.reprotect();
         setStatus("Fill cancelled");
         for (QWindow* w : QGuiApplication::topLevelWindows())
         {
@@ -160,6 +163,7 @@ void Backend::submitPassword(const QString& password)
 {
     auto wide = qstringToSecureWide(password);
     m_Password = std::move(wide);
+    m_DPAPIGuard = sage::DPAPIGuard<sage::basic_secure_string<wchar_t>>(&m_Password);
     m_PasswordSet = true;
     qCInfo(logBackend) << "password set via manual entry";
     setStatus("Password set");
@@ -204,28 +208,22 @@ void Backend::requestOcrCapture()
         return;
     }
 
-    // Convert the UTF-8 OCR result into locked wchar_t memory, then wipe the
-    // plaintext buffer immediately so it doesn't linger on the stack.
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-    if (wlen > 0)
-    {
-        m_Password.s.resize(wlen - 1);
-        MultiByteToWideChar(CP_UTF8, 0, buf, -1, m_Password.s.data(), wlen);
-    }
+    // Convert the UTF-8 OCR result to a QString for pre-filling the
+    // password dialog. Don't set m_Password yet - let the user confirm.
+    QString captured = QString::fromUtf8(buf, (int)strnlen(buf, sizeof(buf)));
     SecureZeroMemory(buf, sizeof(buf));
-    m_PasswordSet = true;
-    qCInfo(logBackend) << "password set via OCR (" << (wlen - 1) << "chars)";
-    setStatus("Password set via webcam OCR");
-    emit passwordSetChanged();
+
+    qCInfo(logBackend) << "OCR captured" << captured.size() << "chars, awaiting confirmation";
+    setStatus("OCR captured - confirm password");
     emit ocrCaptureFinished(true);
 
-    // Resume pending action, same pattern as submitPassword().
-    if (m_PendingAction)
-    {
-        auto action = std::move(m_PendingAction);
-        m_PendingAction = nullptr;
-        action();
-    }
+    // Signal the QML layer to re-open the password dialog with the
+    // captured text pre-filled. The user can review and press OK to confirm,
+    // which flows through the normal submitPassword() path.
+    emit ocrTextReady(captured);
+
+    // Wipe the local QString copy.
+    captured.fill(QChar(0));
 }
 
 void Backend::setStatus(const QString& text)
@@ -326,7 +324,9 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
                        << "autoLoad=" << isAutoLoad;
     try
     {
+        m_DPAPIGuard.unprotect();
         m_Records = sage::loadVaultIndex(filePath, m_Password);
+        m_DPAPIGuard.reprotect();
         m_CurrentVaultPath = filePath;
         qCInfo(logBackend) << "vault loaded:" << m_Records.size() << "record(s)";
         refreshModel();
@@ -340,9 +340,11 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
     }
     catch (const std::runtime_error& e)
     {
+        m_DPAPIGuard.reprotect();
         if (std::string(e.what()) == "Wrong password")
         {
             qCWarning(logBackend) << "wrong password for vault";
+            m_DPAPIGuard = {};
             sage::Cryptography::cleanseString(m_Password);
             m_PasswordSet = false;
             emit passwordSetChanged();
@@ -405,7 +407,10 @@ void Backend::saveVault()
 
     qCInfo(logBackend) << "saveVault:" << QFileInfo(fileName).fileName()
                        << "records=" << m_Records.size();
-    if (sage::saveVaultV2(fileName, m_Records, m_Password))
+    m_DPAPIGuard.unprotect();
+    bool saveOk = sage::saveVaultV2(fileName, m_Records, m_Password);
+    m_DPAPIGuard.reprotect();
+    if (saveOk)
     {
         m_CurrentVaultPath = fileName;
 
@@ -465,8 +470,10 @@ void Backend::addAccount(const QString& service,
     auto secUsername = qstringToSecureWide(username);
     auto secPassword = qstringToSecureWide(password);
 
+    m_DPAPIGuard.unprotect();
     sage::VaultRecord newRecord = sage::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
+    m_DPAPIGuard.reprotect();
 
     sage::Cryptography::cleanseString(secUsername, secPassword);
 
@@ -497,8 +504,10 @@ void Backend::editAccount(int index,
     auto secPassword = qstringToSecureWide(password);
 
     // Replace the record entirely - re-encrypt with a fresh salt/IV.
+    m_DPAPIGuard.unprotect();
     m_Records[index] = sage::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
+    m_DPAPIGuard.reprotect();
 
     sage::Cryptography::cleanseString(secUsername, secPassword);
 
@@ -553,8 +562,10 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             QVariantMap data;
             try
             {
+                m_DPAPIGuard.unprotect();
                 sage::DecryptedCredential cred =
                     sage::decryptCredentialOnDemand(m_Records[index], m_Password);
+                m_DPAPIGuard.reprotect();
                 data["service"] = QString::fromUtf8(m_Records[index].m_Platform.c_str());
                 data["username"] = QString::fromWCharArray(
                     cred.m_Username.data(), (int)cred.m_Username.size());
@@ -566,6 +577,7 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             }
             catch (const std::exception& e)
             {
+                m_DPAPIGuard.reprotect();
                 qCWarning(logBackend) << "decryptAccountForEdit (deferred): decrypt failed:" << e.what();
                 emit errorOccurred("Error",
                     QString("Failed to decrypt credential: %1").arg(e.what()));
@@ -578,8 +590,10 @@ QVariantMap Backend::decryptAccountForEdit(int index)
     try
     {
         // On-demand decrypt - credential blob stays encrypted at rest.
+        m_DPAPIGuard.unprotect();
         sage::DecryptedCredential cred =
             sage::decryptCredentialOnDemand(m_Records[index], m_Password);
+        m_DPAPIGuard.reprotect();
 
         result["service"] = QString::fromUtf8(m_Records[index].m_Platform.c_str());
         result["username"] = QString::fromWCharArray(
@@ -592,6 +606,7 @@ QVariantMap Backend::decryptAccountForEdit(int index)
     }
     catch (const std::exception& e)
     {
+        m_DPAPIGuard.reprotect();
         qCWarning(logBackend) << "decryptAccountForEdit: decrypt failed:" << e.what();
         emit errorOccurred("Error",
             QString("Failed to decrypt credential: %1").arg(e.what()));
@@ -706,7 +721,9 @@ void Backend::typeLogin(int index)
 
             QString service = QString::fromUtf8(m_Records[index].m_Platform.c_str());
 
+            m_DPAPIGuard.unprotect();
             doTypeLogin(this, m_Records, index, m_Password);
+            m_DPAPIGuard.reprotect();
 
             m_CountdownText.clear();
             emit countdownTextChanged();
@@ -760,7 +777,9 @@ void Backend::typePassword(int index)
 
             QString service = QString::fromUtf8(m_Records[index].m_Platform.c_str());
 
+            m_DPAPIGuard.unprotect();
             doTypePassword(m_Records, index, m_Password);
+            m_DPAPIGuard.reprotect();
 
             m_CountdownText.clear();
             emit countdownTextChanged();
@@ -786,7 +805,9 @@ void Backend::encryptDirectory()
     if (dirPath.isEmpty())
         return;
 
+    m_DPAPIGuard.unprotect();
     int count = sage::encryptDirectory(dirPath, m_Password);
+    m_DPAPIGuard.reprotect();
     qCInfo(logBackend) << "encryptDirectory: encrypted" << count << "file(s)";
     setStatus(QString("Encrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Encrypted %1 file(s) in directory").arg(count));
@@ -805,7 +826,9 @@ void Backend::decryptDirectory()
     if (dirPath.isEmpty())
         return;
 
+    m_DPAPIGuard.unprotect();
     int count = sage::decryptDirectory(dirPath, m_Password);
+    m_DPAPIGuard.reprotect();
     qCInfo(logBackend) << "decryptDirectory: decrypted" << count << "file(s)";
     setStatus(QString("Decrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Decrypted %1 file(s) in directory").arg(count));
@@ -873,6 +896,7 @@ void Backend::armFill(int index)
         return;
 
     qCInfo(logBackend) << "armFill: index=" << index;
+    m_DPAPIGuard.unprotect();
     m_FillController->arm(index, m_Records, m_Password);
     setStatus("Fill armed - Ctrl+Click target field");
 
@@ -902,12 +926,15 @@ void Backend::cleanup()
     {
         try
         {
+            m_DPAPIGuard.unprotect();
             int count = sage::encryptDirectory(m_AutoEncryptDirectory, m_Password);
+            m_DPAPIGuard.reprotect();
             qCInfo(logBackend) << "cleanup: auto-encrypted" << count << "file(s)";
             setStatus(QString("Auto-encrypted %1 file(s) in directory").arg(count));
         }
         catch (const std::exception& e)
         {
+            m_DPAPIGuard.reprotect();
             qCWarning(logBackend) << "cleanup: auto-encrypt failed:" << e.what();
         }
     }
@@ -916,10 +943,13 @@ void Backend::cleanup()
     // after the application exits.
     if (m_PasswordSet)
     {
+        m_DPAPIGuard = {};
         sage::Cryptography::cleanseString(m_Password);
         m_PasswordSet = false;
         emit passwordSetChanged();
     }
+
+    sage::Cryptography::trimWorkingSet();
 }
 
 void Backend::updateWindowTheme(bool dark)

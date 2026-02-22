@@ -61,6 +61,10 @@ fence
 *.7z
 *.rar
 
+# Python
+__pycache__/
+*.pyc
+
 # Dependencies
 vcpkg_installed/
 vcpkg_manifest/

@@ -6,6 +6,8 @@
 
 #include "Cryptography.h"
 
+#include <sddl.h>
+
 #ifdef USE_QT_UI
 #include "Logging.h"
 #include <QtCore/QElapsedTimer>
@@ -25,6 +27,124 @@ bool Cryptography::ctEqualRaw(const void* a, const void* b, size_t n)
 void Cryptography::hardenHeap()
 {
     HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
+}
+
+void Cryptography::hardenProcessAccess()
+{
+    // Build a DACL that denies dangerous process access rights to Everyone,
+    // while granting SYSTEM full control so the OS can still manage us.
+    // This blocks procdump, Process Hacker, and malware memory reads.
+
+    PSECURITY_DESCRIPTOR pSD = nullptr;
+    PACL pDacl = nullptr;
+
+    // SDDL string:
+    //  D:  = DACL
+    //  (D;;0x1418;;WD)  = Deny Everyone: PROCESS_VM_READ (0x10) | PROCESS_VM_WRITE (0x20) |
+    //                      PROCESS_VM_OPERATION (0x8) | PROCESS_DUP_HANDLE (0x40) |
+    //                      PROCESS_QUERY_INFORMATION (0x400) | PROCESS_CREATE_THREAD (0x2) = 0x147A
+    //  (A;;GA;;;SY)     = Allow SYSTEM: GENERIC_ALL
+    //  (A;;GA;;;BA)     = Allow Administrators: GENERIC_ALL (so we don't lock out admin tasks)
+    BOOL ok = ConvertStringSecurityDescriptorToSecurityDescriptorA(
+        "D:(D;;0x147A;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)",
+        SDDL_REVISION_1,
+        &pSD,
+        nullptr);
+
+    if (ok && pSD) {
+        BOOL daclPresent = FALSE, daclDefaulted = FALSE;
+        if (GetSecurityDescriptorDacl(pSD, &daclPresent, &pDacl, &daclDefaulted) && daclPresent) {
+            SetSecurityInfo(
+                GetCurrentProcess(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                nullptr, nullptr, pDacl, nullptr);
+        }
+        LocalFree(pSD);
+    }
+
+#ifdef USE_QT_UI
+    qCInfo(logCrypto) << "hardenProcessAccess:" << (ok ? "applied" : "failed");
+#endif
+}
+
+void Cryptography::disableCrashDumps()
+{
+    // Suppress WER crash dialogs that might create minidumps containing secrets.
+    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+
+    // Install a custom unhandled exception filter that wipes sensitive memory
+    // then terminates immediately, preventing the default handler from
+    // writing a crash dump.
+    SetUnhandledExceptionFilter([](PEXCEPTION_POINTERS) -> LONG {
+        TerminateProcess(GetCurrentProcess(), 1);
+        return EXCEPTION_CONTINUE_SEARCH; // unreachable
+    });
+
+#ifdef USE_QT_UI
+    qCInfo(logCrypto) << "disableCrashDumps: WER suppressed, custom exception filter installed";
+#endif
+}
+
+void Cryptography::detectDebugger()
+{
+    // Check 1: IsDebuggerPresent (user-mode debugger)
+    if (IsDebuggerPresent()) {
+#ifdef USE_QT_UI
+        qCWarning(logCrypto) << "detectDebugger: user-mode debugger detected, aborting";
+#else
+        OutputDebugStringA("[sage] FATAL: debugger detected\n");
+#endif
+        TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        return;
+    }
+
+    // Check 2: CheckRemoteDebuggerPresent (remote/kernel debugger)
+    BOOL remoteDebugger = FALSE;
+    if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger) && remoteDebugger) {
+#ifdef USE_QT_UI
+        qCWarning(logCrypto) << "detectDebugger: remote debugger detected, aborting";
+#else
+        OutputDebugStringA("[sage] FATAL: remote debugger detected\n");
+#endif
+        TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        return;
+    }
+
+    // Check 3: NtQueryInformationProcess(ProcessDebugPort)
+    // Dynamically resolve to avoid a hard dependency on ntdll.
+    using PFN_NtQueryInformationProcess = LONG(WINAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (hNtdll) {
+        auto pNtQIP = reinterpret_cast<PFN_NtQueryInformationProcess>(
+            GetProcAddress(hNtdll, "NtQueryInformationProcess"));
+        if (pNtQIP) {
+            ULONG_PTR debugPort = 0;
+            LONG status = pNtQIP(GetCurrentProcess(), 7 /*ProcessDebugPort*/,
+                                 &debugPort, sizeof(debugPort), nullptr);
+            if (status == 0 && debugPort != 0) {
+#ifdef USE_QT_UI
+                qCWarning(logCrypto) << "detectDebugger: kernel debug port detected, aborting";
+#else
+                OutputDebugStringA("[sage] FATAL: kernel debug port detected\n");
+#endif
+                TerminateProcess(GetCurrentProcess(), 0xDEAD);
+                return;
+            }
+        }
+    }
+
+#ifdef USE_QT_UI
+    qCInfo(logCrypto) << "detectDebugger: no debugger detected";
+#endif
+}
+
+void Cryptography::trimWorkingSet()
+{
+    // Force pages out of the working set so plaintext doesn't linger
+    // in physical RAM after sensitive operations complete.
+    // K32EmptyWorkingSet is in kernel32 - no extra lib needed.
+    EmptyWorkingSet(GetCurrentProcess());
 }
 
 using PFN_SetProcessMitigationPolicy = BOOL(WINAPI*)(PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);

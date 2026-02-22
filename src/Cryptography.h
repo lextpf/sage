@@ -12,6 +12,9 @@
 #include <winnt.h>
 #include <heapapi.h>
 #include <processthreadsapi.h>
+#include <wincrypt.h>
+#include <psapi.h>
+#include <aclapi.h>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -43,6 +46,7 @@
 #pragma comment(lib, "Secur32.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Comdlg32.lib")
+#pragma comment(lib, "Crypt32.lib")
 #endif
 
 namespace sage {
@@ -405,6 +409,88 @@ namespace sage {
     };
 
     /**
+     * @brief RAII guard for DPAPI in-memory encryption of secure strings.
+     *
+     * Wraps CryptProtectMemory / CryptUnprotectMemory with SAME_PROCESS scope.
+     * The buffer is encrypted on construction and decrypted only during
+     * explicit unprotect/reprotect windows. Destruction unprotects then wipes.
+     *
+     * CryptProtectMemory requires the buffer size to be a multiple of
+     * CRYPTPROTECTMEMORY_BLOCK_SIZE. The guard pads the backing vector
+     * to meet this requirement transparently.
+     */
+    template<class SecStr>
+    struct DPAPIGuard {
+        using char_type = typename decltype(SecStr::s)::value_type;
+
+        SecStr* m_Str = nullptr;
+        bool    m_Protected = false;
+
+        DPAPIGuard() = default;
+        explicit DPAPIGuard(SecStr* str) : m_Str(str) { protect(); }
+
+        DPAPIGuard(const DPAPIGuard&) = delete;
+        DPAPIGuard& operator=(const DPAPIGuard&) = delete;
+        DPAPIGuard(DPAPIGuard&& o) noexcept
+            : m_Str(o.m_Str), m_Protected(o.m_Protected)
+        {
+            o.m_Str = nullptr;
+            o.m_Protected = false;
+        }
+        DPAPIGuard& operator=(DPAPIGuard&& o) noexcept {
+            if (this != &o) {
+                release();
+                m_Str = o.m_Str;
+                m_Protected = o.m_Protected;
+                o.m_Str = nullptr;
+                o.m_Protected = false;
+            }
+            return *this;
+        }
+
+        ~DPAPIGuard() { release(); }
+
+        void protect() {
+            if (!m_Str || m_Str->empty() || m_Protected) return;
+            padToBlockSize();
+            sage::protect_readwrite(m_Str->s.data());
+            DWORD cbData = static_cast<DWORD>(m_Str->s.size() * sizeof(char_type));
+            if (CryptProtectMemory(m_Str->s.data(), cbData, CRYPTPROTECTMEMORY_SAME_PROCESS))
+                m_Protected = true;
+        }
+
+        void unprotect() {
+            if (!m_Str || m_Str->empty() || !m_Protected) return;
+            sage::protect_readwrite(m_Str->s.data());
+            DWORD cbData = static_cast<DWORD>(m_Str->s.size() * sizeof(char_type));
+            if (CryptUnprotectMemory(m_Str->s.data(), cbData, CRYPTPROTECTMEMORY_SAME_PROCESS))
+                m_Protected = false;
+        }
+
+        void reprotect() { protect(); }
+
+    private:
+        void padToBlockSize() {
+            if (!m_Str || m_Str->empty()) return;
+            size_t byteSize = m_Str->s.size() * sizeof(char_type);
+            size_t rem = byteSize % CRYPTPROTECTMEMORY_BLOCK_SIZE;
+            if (rem != 0) {
+                size_t padBytes = CRYPTPROTECTMEMORY_BLOCK_SIZE - rem;
+                size_t padChars = (padBytes + sizeof(char_type) - 1) / sizeof(char_type);
+                m_Str->s.resize(m_Str->s.size() + padChars, char_type{});
+            }
+        }
+
+        void release() {
+            if (m_Str && m_Protected) {
+                unprotect();
+            }
+            m_Str = nullptr;
+            m_Protected = false;
+        }
+    };
+
+    /**
      * @brief RAII console mode guard.
      * @author Alex (https://github.com/lextpf)
      */
@@ -484,6 +570,18 @@ namespace sage {
 
         /// @brief Enable heap termination on corruption.
         static void hardenHeap();
+
+        /// @brief Set a restrictive DACL on the current process to block memory reads.
+        static void hardenProcessAccess();
+
+        /// @brief Suppress crash dumps and WER dialogs to prevent memory disclosure.
+        static void disableCrashDumps();
+
+        /// @brief Detect attached debuggers and abort if found.
+        static void detectDebugger();
+
+        /// @brief Trim the working set to reduce plaintext residency in physical RAM.
+        static void trimWorkingSet();
 
         /// @brief Apply process-wide security mitigations.
         static BOOL setSecureProcessMitigations(bool allowDynamicCode);
