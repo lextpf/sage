@@ -153,7 +153,9 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
 
 bool Clipboard::copyWithTTL(const char* s, DWORD ttl_ms)
 {
-    return copyWithTTL(s ? s : "", s ? std::strlen(s) : 0, ttl_ms);
+    if (!s)
+        return copyWithTTL("", 0, ttl_ms);
+    return copyWithTTL(s, std::strlen(s), ttl_ms);
 }
 
 bool Clipboard::copyInputFile()

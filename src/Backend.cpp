@@ -193,7 +193,7 @@ void Backend::requestOcrCapture()
     char buf[512] = {};
     int rc = tess_ocr_capture_from_webcam(nullptr, 0, buf, sizeof(buf));
     qCInfo(logBackend) << "webcam OCR returned rc=" << rc
-                       << "len=" << strlen(buf);
+                       << "len=" << strnlen(buf, sizeof(buf));
 
     if (rc != TESS_OCR_OK || buf[0] == '\0')
     {
@@ -831,11 +831,8 @@ void Backend::autoLoadVault()
         QFileInfoList files = dir.entryInfoList(
             QStringList() << "*.sage", QDir::Files);
 
-        for (const QFileInfo& fileInfo : files)
-        {
-            foundVaultPath = fileInfo.absoluteFilePath();
-            break; // Take the first match in this directory.
-        }
+        if (!files.isEmpty())
+            foundVaultPath = files.first().absoluteFilePath();
         if (!foundVaultPath.isEmpty())
             break;
     }

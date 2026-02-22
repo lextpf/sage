@@ -462,7 +462,7 @@ sage::basic_secure_string<wchar_t> readPasswordSecureDesktop(
     }
 
     // Copy password into a secure string
-    size_t passLen = wcslen(pass.data);
+    size_t passLen = wcsnlen(pass.data, pass.count);
     sage::basic_secure_string<wchar_t> out;
     out.s.resize(passLen);
     for (size_t i = 0; i < passLen; ++i)
