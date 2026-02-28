@@ -2,7 +2,22 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Root window. Owns layout, dialogs, and all Backend signal wiring.
+// Root application window.
+//
+// Responsibilities:
+//   - Owns the top-level layout (header, search, table, actions, footer)
+//   - Wires every Backend signal to the appropriate dialog (password, error, info, edit, delete)
+//   - Manages dialog instances (created once, shown/hidden via open()/close() to avoid
+//     repeated QML object creation and to preserve state across re-shows)
+//   - Drives startup (autoLoadVault) and shutdown (cleanup) lifecycle hooks
+//
+// Data flow:
+//   Backend (C++) --signals--> Connections block here --sets props/opens--> Dialog instances
+//   Dialog instances --signals (accepted/confirmed)--> Backend Q_INVOKABLE slots
+//
+// No credential plaintext ever reaches QML. The VaultListModel exposes only
+// masked strings; real values are decrypted on-demand in C++ and sent via
+// SendInput keystrokes or returned through QVariantMap for the edit dialog.
 
 ApplicationWindow {
     id: window
@@ -13,16 +28,24 @@ ApplicationWindow {
     minimumHeight: 540
     title: "sage"
     color: Theme.bgDeep
-    // Cross-fade on theme switch.
+    // Smooth cross-fade when the user toggles dark/light mode, so the
+    // background doesn't snap harshly.
     Behavior on color { ColorAnimation { duration: 350; easing.type: Easing.InOutQuad } }
 
-    // Sync Windows title bar color via DwmSetWindowAttribute on theme change.
+    // Qt's frameless title bar doesn't follow system dark/light mode, so we
+    // push the current theme to the Win32 DWM layer (caption color, text color)
+    // every time the user toggles. Without this, the title bar stays white in
+    // dark mode or vice-versa.
     Connections {
         target: Theme
         function onDarkChanged() { Backend.updateWindowTheme(Theme.dark) }
     }
 
-    // Backend signal routing: map each signal to the appropriate dialog.
+    // Central signal router. Backend emits signals from C++ when it needs the
+    // UI to react (show a dialog, fill a field, report an error). Each handler
+    // here configures the target dialog's properties and opens it. This keeps
+    // all Backend-to-UI wiring in one place rather than scattered across
+    // individual components.
     Connections {
         target: Backend
 
@@ -70,7 +93,10 @@ ApplicationWindow {
             passwordDlg.fillPassword(text);
         }
 
-        // Credentials are encrypted at rest; Backend decrypts and sends data for editing.
+        // Deferred edit path: if no password was set when the user clicked Edit,
+        // the Backend queued the decrypt and emits this signal once the password
+        // dialog completes and decryption succeeds. The data map carries the
+        // plaintext fields for one-time display in the edit dialog.
         function onEditAccountReady(data) {
             accountDlg.dialogTitle = "Edit Account";
             accountDlg.editIndex = data.editIndex;
@@ -87,14 +113,21 @@ ApplicationWindow {
         Backend.autoLoadVault();
     }
 
-    // Auto-encrypt and hook cleanup before exit.
+    // Cleanup runs synchronously before the window closes. Backend::cleanup()
+    // cancels any armed fill hooks, auto-encrypts the configured directory
+    // (if any), wipes the master password, and trims the working set so
+    // sensitive data doesn't linger in physical RAM after exit.
     onClosing: function(close) {
         Backend.cleanup();
         close.accepted = true;
     }
 
-    // Eight decorative blobs at z:-1. Percentage-based positions scale with window.
-    // Varied sizes (160-320px), three alternating colors, very low alpha.
+    // Eight decorative background blobs at z:-1 create subtle depth and visual
+    // warmth behind the main UI. Percentage-based x/y positions scale with the
+    // window so they redistribute naturally on resize. Three alternating colors
+    // at 3-5% alpha keep them unobtrusive; the semi-transparent bgCard lets
+    // them bleed through the main content area for a layered glass effect.
+    // Each blob animates its color on theme toggle for a smooth transition.
     Rectangle {
         width: 260; height: 260; radius: 130
         color: Theme.blobColor1
@@ -152,7 +185,9 @@ ApplicationWindow {
         z: -1
     }
 
-    // Outer layout fills window; inner layout adds content margins. Footer spans full width.
+    // Two-tier ColumnLayout: the outer one fills the window edge-to-edge (so the
+    // status footer can span the full width with no side margins), while the inner
+    // one adds generous content margins around header/search/table/actions.
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -182,7 +217,9 @@ ApplicationWindow {
                 color: Theme.divider
             }
 
-            // Drives VaultModel::setFilter() for live filtering.
+            // Two-way binding: typing here sets Backend.searchFilter, which
+            // calls VaultModel::setFilter() in C++ to re-filter the proxy list.
+            // The model emits dataChanged and the ListView updates instantly.
             SearchBar {
                 Layout.fillWidth: true
                 onTextChanged: Backend.searchFilter = text
@@ -202,7 +239,10 @@ ApplicationWindow {
                 }
             }
 
-            // Resolves visible row to real record index (model may be filtered).
+            // CRUD + Fill action buttons. When a search filter is active, the
+            // visible row indices don't match the underlying record vector, so
+            // each handler calls vaultModel.recordIndexForRow() to resolve the
+            // visual index to the real record position before calling Backend.
             ActionBar {
                 Layout.fillWidth: true
                 hasSelection: Backend.hasSelection
@@ -218,7 +258,9 @@ ApplicationWindow {
                     accountDlg.open();
                 }
 
-                // Synchronous decrypt; returns empty strings on failure.
+                // Synchronous path: if the password is already set, decryptAccountForEdit()
+                // returns a QVariantMap with plaintext fields immediately. If not, it
+                // returns an empty map and the deferred path (onEditAccountReady) handles it.
                 onEditClicked: {
                     if (!Backend.hasSelection) return;
                     var realIdx = Backend.vaultModel.recordIndexForRow(Backend.selectedIndex);
@@ -240,7 +282,10 @@ ApplicationWindow {
                     confirmDlg.open();
                 }
 
-                // Next Ctrl+Click (even outside sage) will type decrypted credentials.
+                // Arms global mouse/keyboard hooks via FillController. The sage
+                // window minimizes so the user can Ctrl+Click in any external app
+                // to type the username, then Ctrl+Click again for the password.
+                // The hooks are removed automatically on completion, timeout, or cancel.
                 onFillClicked: {
                     if (!Backend.hasSelection) return;
                     var realIdx = Backend.vaultModel.recordIndexForRow(Backend.selectedIndex);
@@ -270,7 +315,14 @@ ApplicationWindow {
         }
     }
 
-    // -- Dialogs (instantiated once, reused via open/close) --
+    // -- Dialogs --
+    // All dialogs are instantiated once at startup and reused via open()/close().
+    // This avoids repeated QML object construction (expensive for styled popups)
+    // and keeps dialog state (e.g. error messages) stable across re-shows.
+
+    // Master password entry. Blocks all interaction until submitted. The Backend
+    // stores a pending action lambda that re-executes once the password is set,
+    // so the user never has to re-click the original action after entering it.
     PasswordDialog {
         id: passwordDlg
         onAccepted: function(password) {
@@ -305,7 +357,10 @@ ApplicationWindow {
         }
     }
 
-    // Overrides ConfirmDialog contentItem to show a single OK button.
+    // Error dialog. Reuses ConfirmDialog's popup shell but replaces the
+    // contentItem entirely: shows an exclamation icon + message + single OK
+    // button (no Yes/No). This avoids creating a separate Popup component
+    // just for a different button layout.
     ConfirmDialog {
         id: errorDialog
         contentItem: ColumnLayout {

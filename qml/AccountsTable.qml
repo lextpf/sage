@@ -2,21 +2,30 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 
-// Vault credentials table. Custom header + ListView for full control over
-// row rendering (selection glow, zebra striping, masked display).
+// Vault credentials table.
+//
+// Uses a custom column header + bare ListView rather than Qt's TableView because
+// TableView doesn't support per-row selection glow, zebra striping, or custom
+// empty-state placeholders without heavy workarounds. The trade-off is manually
+// matching column widths between header and delegate, but with only three fixed
+// columns this is straightforward.
+//
+// The model is a VaultListModel (QAbstractListModel subclass) that exposes
+// platform, maskedUsername, maskedPassword, and recordIndex roles. Filtering
+// is handled inside the model (C++ side) so the ListView just renders what it gets.
 
 Rectangle {
     id: root
 
-    property var model
-    property int selectedRow: -1
-    property bool searchActive: false
-    property bool vaultLoaded: false
+    property var model              // VaultListModel instance from Backend
+    property int selectedRow: -1    // Visual index of the selected row (-1 = none)
+    property bool searchActive: false  // True when the search bar has text
+    property bool vaultLoaded: false   // Controls which empty-state placeholder shows
 
     signal rowClicked(int row)
 
     radius: Theme.radiusLarge
-    // Card gradient for "lit from above" depth.
+    // Top-to-bottom gradient simulates overhead lighting for card depth.
     gradient: Gradient {
         GradientStop { position: 0; color: Theme.bgCard }
         GradientStop { position: 1; color: Theme.bgCardEnd }
@@ -29,7 +38,9 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // Header with rounded top corners only (bottom corners masked by overlay).
+        // Column header. Gets rounded top corners from the parent radius, but we
+        // need square bottom corners where the header meets the list rows. A small
+        // fill rectangle at the bottom masks the rounded corners to achieve this.
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 44
@@ -152,14 +163,19 @@ Rectangle {
                 background: Item {}
             }
 
-            // Selection state passed in from parent.
+            // Each delegate receives `selected` from the parent's binding; clicking
+            // a row emits rowClicked(index) which Main.qml handles with toggle logic
+            // (clicking the same row again deselects it).
             delegate: AccountRow {
                 width: listView.width
                 selected: root.selectedRow === index
                 onClicked: root.rowClicked(index)
             }
 
-            // Empty state - no search results
+            // Empty state placeholders. Two variants:
+            // 1. Search active but no matches: "No accounts found" with filter icon
+            // 2. No vault loaded / no accounts: "No accounts loaded" with shield icon
+            // Only one is visible at a time based on searchActive and vaultLoaded flags.
             Column {
                 anchors.centerIn: parent
                 visible: listView.count === 0 && root.searchActive && root.vaultLoaded

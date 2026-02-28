@@ -2,8 +2,13 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Top header bar: app branding (icon + title), theme toggle, and vault control
-// buttons (Load, Save, Unload). Save and Unload are disabled until a vault is loaded.
+// Top header bar. Layout: [fingerprint icon] [title] [theme toggle] ... [Load] [Save] [Unload]
+//
+// Save and Unload are disabled until a vault is loaded (bound to vaultLoaded).
+// Load is always enabled so the user can open a vault from any state.
+//
+// All three vault buttons use the neutral iconBtn palette (same hue, different
+// states) because they're utilities rather than primary actions like Add/Edit/Delete.
 
 RowLayout {
     id: root
@@ -15,7 +20,8 @@ RowLayout {
 
     property bool vaultLoaded: false
 
-    // App identity icon. Rainbow cycle easter egg on click.
+    // App identity icon. Clicking triggers a rainbow color cycle easter egg:
+    // the icon transitions through seven hues then returns to the theme accent.
     SvgIcon {
         id: fingerprintIcon
         source: Theme.iconFingerprint

@@ -2,7 +2,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Encrypt/Decrypt directory buttons. Always enabled (vault-independent).
+// Encrypt / Decrypt directory buttons. Always enabled regardless of vault
+// state because directory encryption is independent of the vault file - it
+// uses the master password to encrypt/decrypt arbitrary files via AES-256-GCM.
+// If no password is set yet, the Backend defers the action and prompts for one.
 
 RowLayout {
     id: root

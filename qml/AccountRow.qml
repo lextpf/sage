@@ -1,17 +1,26 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Single row in the accounts list. Only masked strings reach QML; no real credentials.
+// Single row in the accounts list view.
+//
+// Security: no plaintext credentials ever reach this component. The C++ VaultListModel
+// exposes only masked strings (e.g. "********") through its data roles. Decryption
+// happens on-demand in Backend when the user explicitly triggers typeLogin/typePassword
+// or opens the edit dialog.
+//
+// Required properties are injected by the ListView delegate system from the model's
+// role names. `recordIndex` is the real index into Backend::m_Records (stable across
+// filtering); `index` is the visual row position (changes when the filter narrows).
 
 Item {
     id: root
 
-    required property int index
-    required property string platform
+    required property int index           // Visual position in the filtered list
+    required property string platform     // Cleartext service name (decrypted on vault load)
     required property string maskedUsername
     required property string maskedPassword
-    required property int recordIndex
-    required property bool selected
+    required property int recordIndex     // Stable index into Backend::m_Records
+    required property bool selected       // Driven by parent's selectedRow binding
     property bool isHovered: mouseArea.containsMouse
 
     signal clicked()
@@ -20,7 +29,9 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        // Priority: selected > hovered > zebra stripe > transparent.
+        // Four-state background priority: selected (strongest) > hovered >
+        // zebra stripe (odd rows get a subtle tint for readability) > transparent.
+        // All transitions are animated via Behavior for smooth state changes.
         color: root.selected ? Theme.selectionActive
              : root.isHovered ? Theme.selectionHover
              : (root.index % 2 === 1) ? Theme.rowAlt
@@ -29,7 +40,10 @@ Item {
 
         Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
 
-        // Top selection glow
+        // Selection glow pair (top + bottom). A 3px gradient fading from the
+        // selection accent color to transparent creates a soft "lit edge" effect
+        // that makes the selected row pop without a hard border. Opacity-animated
+        // so it fades in/out smoothly on selection change.
         Rectangle {
             anchors.top: parent.top
             anchors.left: parent.left
@@ -85,7 +99,8 @@ Item {
             anchors.rightMargin: 14
             spacing: 0
 
-            // Platform name (accent color for easy scanning)
+            // Platform name in accent color so the user can quickly scan the
+            // list for a specific service. Brightens on hover for feedback.
             Text {
                 Layout.preferredWidth: 200
                 text: root.platform
@@ -96,7 +111,8 @@ Item {
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
 
-            // Monospace for consistent masked character alignment
+            // Monospace font ensures masked characters ("********") align
+            // consistently across rows regardless of the underlying value length.
             Text {
                 Layout.preferredWidth: 200
                 text: root.maskedUsername

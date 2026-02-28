@@ -1,7 +1,12 @@
 import QtQuick
 import QtQuick.Controls
 
-// Live search field. Bound to Backend.searchFilter for instant vault filtering.
+// Live search field. Typing here instantly updates Backend.searchFilter, which
+// triggers VaultListModel::setFilter() in C++ to re-filter the visible rows.
+// The model uses case-insensitive substring matching against platform names.
+//
+// Layout: [search icon] [text input] [X clear button]
+// The clear button appears only when the field has text, with a fade transition.
 
 TextField {
     id: root

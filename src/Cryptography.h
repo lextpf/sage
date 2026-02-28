@@ -418,7 +418,9 @@ namespace sage {
      *
      * Wraps CryptProtectMemory / CryptUnprotectMemory with SAME_PROCESS scope.
      * The buffer is encrypted on construction and decrypted only during
-     * explicit unprotect/reprotect windows. Destruction unprotects then wipes.
+     * explicit unprotect/reprotect windows. Destruction unprotects and
+     * detaches from the buffer but does not wipe it; the caller (or the
+     * secure string's own destructor) is responsible for wiping.
      *
      * CryptProtectMemory requires the buffer size to be a multiple of
      * CRYPTPROTECTMEMORY_BLOCK_SIZE. The guard pads the backing vector

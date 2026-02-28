@@ -46,7 +46,8 @@ class FillController;
  *
  * requestQrCapture() launches the tess_qr library to scan a QR code
  * from a phone screen held up to the webcam. On success the captured
- * text is stored as the master password, skipping manual entry.
+ * text is proposed via qrTextReady() to pre-fill the password dialog;
+ * the password is not committed until the user confirms.
  */
 class Backend : public QObject
 {
@@ -138,10 +139,11 @@ public:
     Q_INVOKABLE void saveVault();
 
     /**
-     * @brief Unload the vault, clearing all records and wiping the password.
+     * @brief Unload the vault, clearing all records and the file path.
      *
-     * Resets selectedIndex, clears the model, and cleanses the master
-     * password from memory.
+     * Resets selectedIndex, clears the model, and resets the vault path.
+     * The master password is retained so the user can open another vault
+     * without re-entering it; use cleanup() to wipe the password.
      */
     Q_INVOKABLE void unloadVault();
 

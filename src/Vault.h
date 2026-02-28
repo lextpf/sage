@@ -49,7 +49,8 @@ struct DecryptedCredential
  *
  * Decrypts platform names on load so the UI can list accounts.
  * Credentials remain encrypted until explicitly requested.
- * Each line: encrypted_platform_hex | encrypted_credential_hex.
+ * Each line: `encrypted_platform_hex:encrypted_credential_hex`.
+ * Legacy vaults using `|` as the delimiter are also accepted.
  */
 std::vector<VaultRecord> loadVaultIndex(
     const QString& vaultPath,
@@ -59,7 +60,7 @@ std::vector<VaultRecord> loadVaultIndex(
 /**
  * @brief Save vault with fully-encrypted records.
  *
- * Each line: encrypted_platform_hex | encrypted_credential_hex.
+ * Each line: `encrypted_platform_hex:encrypted_credential_hex`.
  * Deleted records are omitted.  Untouched records reuse their existing
  * encrypted blobs (no re-encryption).
  */
@@ -92,7 +93,7 @@ VaultRecord encryptCredential(
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& masterPassword
 );
 
-/// @brief Encrypt a directory recursively (skips .sage and .exe files).
+/// @brief Encrypt a directory recursively (skips .sage, .exe, .dll, and .pdb files).
 int encryptDirectory(
     const QString& dirPath,
     const sage::basic_secure_string<wchar_t, sage::locked_allocator<wchar_t>>& password

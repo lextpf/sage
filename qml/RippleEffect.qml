@@ -1,6 +1,17 @@
 import QtQuick
 
-// Ink ripple effect. Child of button background so it renders behind text.
+// Material Design-inspired ink ripple effect for button press feedback.
+//
+// How it works: a circle is placed at the press coordinates and scaled from
+// 0 to 1 over 420ms. The fade-out starts 80ms later so the ripple is briefly
+// fully visible at its maximum size before disappearing - this creates the
+// characteristic "ink splash" feel. The parent clips the circle so it stays
+// within the button bounds.
+//
+// Usage: embed as a child of a button's `background` Rectangle and call
+// trigger(pressX, pressY) from the button's onPressed handler. The ripple
+// renders behind the button's contentItem (text/icon) because it lives
+// inside the background.
 
 Item {
     id: ripple
@@ -10,7 +21,8 @@ Item {
     property color baseColor: Theme.rippleColor
     property real cx: 0
     property real cy: 0
-    // Diagonal ensures circle covers every corner.
+    // maxRadius uses the diagonal so the circle covers every corner of
+    // the rectangular parent regardless of where the press originated.
     property real maxRadius: Math.sqrt(width * width + height * height)
 
     // Resets and restarts animation from the press point.

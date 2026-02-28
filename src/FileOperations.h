@@ -139,7 +139,8 @@ public:
      * enforces exactly two colons per item.
      *
      * @tparam A Locked allocator for `wchar_t`.
-     * @param plain Narrow plain text input (UTF-8 expected).
+     * @param plain Narrow plain text input (ASCII only; bytes are widened
+     *              directly to `wchar_t` without UTF-8 decoding).
      * @param out   Destination vector of secure UTF-16 triplets.
      * @return `true` on success (non-empty result with only well-formed items).
      */

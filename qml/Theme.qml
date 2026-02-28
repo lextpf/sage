@@ -2,12 +2,26 @@ pragma Singleton
 import QtQuick
 import QtCore
 
-// Centralized design tokens. Switching dark/light is a single property flip.
+// Centralized design token singleton. Every visual property (colors, spacing,
+// radii, fonts, icons) lives here so components never hard-code values.
+//
+// Theme switching is a single `dark` property flip: every color binding
+// re-evaluates via ternary expressions, and QML's reactive system propagates
+// the change to all consumers automatically. The `dark` preference is persisted
+// via Qt Settings so it survives application restarts.
+//
+// Color philosophy:
+//   Dark mode  = cool blue-gray base with blue/purple accents
+//   Light mode = warm parchment base with amber/brown accents
+// Semi-transparent fills (alpha < 1) let the background blobs bleed through
+// for a layered glass-like depth effect.
 
 QtObject {
     id: root
 
-    // Scale text for HiDPI (>1920px). 0.45 dampening keeps it readable. Clamped [1.0, 1.5].
+    // HiDPI text scaling. On screens wider than 1920 physical pixels, text
+    // scales up proportionally with a 0.45 dampening factor to stay readable
+    // without becoming oversized. Clamped to [1.0, 1.5].
     function detectTextScale() {
         var screens = (Qt.application && Qt.application.screens) ? Qt.application.screens : [];
         if (!screens || screens.length === 0)
@@ -36,7 +50,9 @@ QtObject {
         return Math.max(1, Math.round(base * textScale));
     }
 
-    // Persisted via Settings so the preference survives restarts.
+    // Current theme mode. Bound via Settings alias so it persists to the
+    // platform's native storage (registry on Windows, plist on macOS).
+    // toggle() is called from the sun/moon icon in HeaderBar.
     property bool dark: true
     function toggle() { dark = !dark }
 
@@ -67,7 +83,10 @@ QtObject {
     property color bgFooterEnd:  dark ? Qt.rgba(0.05, 0.08, 0.12, 1.0)    : Qt.rgba(0.93, 0.90, 0.84, 1.0)
 
     // -- Button palettes --
-    // Each type has rest/hover/pressed gradients. Alpha < 1 lets background tint through.
+    // Each button type carries four gradient states: rest, hover, pressed, disabled.
+    // Alpha < 1 on all fills lets the background tint show through, maintaining the
+    // layered glass aesthetic. Icon buttons (Load/Save/Unload) share a single neutral
+    // palette; CRUD buttons each have a unique semantic hue.
     property color iconBtnTop:        dark ? Qt.rgba(0.08, 0.14, 0.22, 0.82)  : Qt.rgba(0.94, 0.90, 0.82, 0.82)
     property color iconBtnEnd:        dark ? Qt.rgba(0.06, 0.11, 0.18, 0.86)  : Qt.rgba(0.91, 0.86, 0.78, 0.86)
     property color iconBtnHoverTop:   dark ? Qt.rgba(0.10, 0.20, 0.34, 0.90)  : Qt.rgba(0.90, 0.84, 0.72, 0.90)
@@ -143,7 +162,9 @@ QtObject {
     property color borderFillArmed:   Qt.rgba(1.0, 0.58, 0.08, 0.45)
 
     // -- Text colors --
-    // Dark = cool blue-gray, light = warm brown for cohesive temperature.
+    // Graduated hierarchy: primary > secondary > muted > disabled > subtle.
+    // Dark mode uses cool blue-grays; light mode uses warm browns so the
+    // text temperature matches the overall background warmth/coolness.
     property color textPrimary:     dark ? "#e8ecf6" : "#2a1608"
     property color textSecondary:   dark ? "#c0c8de" : "#4a3420"
     property color textMuted:       dark ? "#6070a0" : "#887058"
@@ -161,7 +182,10 @@ QtObject {
     property color textBadge:       dark ? "#a0b0d0" : "#584838"
 
     // -- Borders --
-    // Graduated alpha scale from borderDim to borderBright. Same base hue per theme.
+    // Graduated alpha scale from borderDim (nearly invisible) to borderBright
+    // (clearly visible). All share the same base hue per theme so borders look
+    // cohesive regardless of intensity. Components pick the level that matches
+    // their visual weight (e.g. cards use borderSubtle, focused inputs use borderFocus).
     property color borderDim:        dark ? Qt.rgba(0.45, 0.55, 1.0, 0.08)  : Qt.rgba(0.55, 0.40, 0.18, 0.08)
     property color borderSoft:       dark ? Qt.rgba(0.45, 0.55, 1.0, 0.12)  : Qt.rgba(0.55, 0.40, 0.18, 0.13)
     property color borderSubtle:     dark ? Qt.rgba(0.45, 0.55, 1.0, 0.15)  : Qt.rgba(0.55, 0.40, 0.18, 0.16)

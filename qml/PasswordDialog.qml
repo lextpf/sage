@@ -2,18 +2,35 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Master password entry. Escape-only close (no click-outside) to prevent
-// accidental dismissal. Re-shown with error on wrong password.
+// Master password entry dialog.
+//
+// Close policy is Escape-only (NoAutoClose): clicking outside does NOT dismiss
+// the dialog. This prevents accidental closure that would leave the user stuck
+// without a password (the Backend has a pending action waiting for it).
+//
+// Lifecycle:
+//   1. Backend emits passwordRequired() -> Main.qml opens this dialog
+//   2. User types password or clicks QR to scan from webcam
+//   3. QR scan: Backend captures text, emits qrTextReady() -> fillPassword()
+//      pre-fills the field but does NOT auto-submit (user must confirm)
+//   4. User presses OK or Enter -> dialog closes, accepted(password) fires,
+//      Main.qml calls Backend.submitPassword() which resumes the pending action
+//   5. If wrong password: Backend emits passwordRetryRequired() with error text,
+//      Main.qml re-opens this dialog with errorMessage set
+//
+// The dialog closes BEFORE accepted() fires so it's gone during the potentially
+// slow scrypt key derivation (avoids a frozen-looking UI).
 
 Popup {
     id: root
 
-    property string errorMessage: ""
+    property string errorMessage: ""  // Non-empty shows a red error line (e.g. "Wrong password")
 
     signal accepted(string password)
     signal qrRequested()
 
-    /// Set the password field text (e.g. from QR scan) without closing the dialog.
+    /// Pre-fill the password field (e.g. from QR scan) without closing the dialog.
+    /// The user still needs to press OK to confirm.
     function fillPassword(text) {
         passwordField.text = text;
         passwordField.forceActiveFocus();
@@ -156,7 +173,9 @@ Popup {
                 }
             }
 
-            // Close before accepted() so dialog is gone during scrypt derivation.
+            // Close the dialog before emitting accepted() so it's already gone
+            // during the potentially slow scrypt key derivation. Otherwise the
+            // dialog would appear frozen/unresponsive while the CPU works.
             Keys.onReturnPressed: {
                 if (passwordField.text.length > 0) {
                     var pw = passwordField.text;
@@ -184,7 +203,10 @@ Popup {
 
             Item { Layout.fillWidth: true }
 
-            // QR button. Dialog stays open; field is filled when capture completes.
+            // QR button. Clicking triggers a webcam capture (Backend::requestQrCapture).
+            // The dialog stays open during capture; on success the Backend emits
+            // qrTextReady() which calls fillPassword() to pre-fill the field.
+            // The user still presses OK to confirm, so a mis-scan can be corrected.
             Button {
                 id: qrButton
                 onClicked: {
@@ -238,7 +260,9 @@ Popup {
                 onPressed: qrRipple.trigger(qrHover.point.position.x, qrHover.point.position.y)
             }
 
-            // OK button. Disabled until non-empty to prevent empty scrypt call.
+            // OK button. Disabled when the field is empty to prevent submitting
+            // a blank password, which would cause a pointless scrypt derivation
+            // and guaranteed decryption failure.
             Button {
                 id: okButton
                 text: "OK"

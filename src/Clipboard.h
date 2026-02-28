@@ -166,7 +166,8 @@ public:
  * @param bytes    UTF-16 string to type.
  * @param len      Number of wide characters, or `-1` for null-terminated.
  * @param delay_ms Delay in milliseconds before typing begins (default 4000).
- * @return `true` if all keystrokes were sent successfully.
+ * @return `true` if the input was valid and keystrokes were dispatched
+ *         (individual `SendInput` results are not verified).
  *
  * @pre The target window must have keyboard focus when typing begins.
  * @post All intermediate buffers are securely wiped.

@@ -2,7 +2,18 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Add/edit account dialog. editIndex == -1 = add, >= 0 = edit that record.
+// Add / edit account dialog. Dual-mode: editIndex == -1 means "add a new
+// credential", >= 0 means "edit the record at that index."
+//
+// The caller (Main.qml) sets initialService/Username/Password before opening.
+// For add mode these are blank; for edit mode they're the decrypted values
+// returned by Backend::decryptAccountForEdit(). On OK, the accepted() signal
+// carries the field values and editIndex back to Main.qml, which routes to
+// Backend.addAccount() or Backend.editAccount() accordingly.
+//
+// Security note: plaintext credentials exist in QML only between the moment
+// the dialog opens and when it closes. The C++ side wipes the QVariantMap
+// source immediately after emission.
 
 Popup {
     id: root
@@ -11,7 +22,7 @@ Popup {
     property string initialService: ""
     property string initialUsername: ""
     property string initialPassword: ""
-    property int editIndex: -1  // -1 = add mode
+    property int editIndex: -1  // -1 = add mode, >= 0 = record index to edit
 
     signal accepted(string service, string username, string password, int editIdx)
 
@@ -171,7 +182,10 @@ Popup {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeMedium
                 color: Theme.textPrimary
-                // Hover-to-reveal: re-hides when cursor leaves to reduce shoulder-surfing.
+                // Hover-to-reveal: password is masked by default and only shown while
+                // the cursor is over the eye icon. Re-hides immediately when the
+                // cursor leaves, reducing shoulder-surfing exposure time vs a
+                // persistent toggle.
                 echoMode: showPassword ? TextInput.Normal : TextInput.Password
                 passwordCharacter: "\u2981"
                 selectByMouse: true
@@ -190,7 +204,10 @@ Popup {
                     border.color: passwordField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
 
-                // Qt.NoButton tracks hover without stealing clicks. -4 margin expands hit area.
+                // Qt.NoButton lets the MouseArea track hover state without intercepting
+                // click events (which would prevent the TextField from receiving focus).
+                // The -4 margin expands the hover hit area beyond the icon bounds for
+                // easier targeting on high-DPI screens.
                 SvgIcon {
                     anchors.right: parent.right
                     anchors.rightMargin: 8

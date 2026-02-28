@@ -62,7 +62,7 @@ public:
      *
      * Enables mouse input, then blocks until the user presses Enter or
      * Escape. Mouse clicks on masked fields trigger a countdown and
-     * keystroke injection via `sage::typeSecretUTF8`. Console input mode
+     * keystroke injection via `sage::typeSecret`. Console input mode
      * is restored automatically when the method returns.
      */
     void run();
