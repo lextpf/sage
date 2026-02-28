@@ -126,17 +126,34 @@ graph LR
 - 🚧 **Guard Pages** - `PAGE_NOACCESS` regions flanking every allocation detect overflows
 - 🧹 **Secure Wiping** - `SecureZeroMemory` scrubs data before deallocation
 - 🐤 **Canary Protection** - 0xD0 sentinel at the tail of every buffer catches overruns
-- 📋 **Clipboard Scrubbing** - Auto-wipes copied credentials after a configurable TTL
+- 📋 **Clipboard Scrubbing** - Auto-wipes copied credentials after a configurable TTL (constant-time comparison prevents timing side-channels)
+- 🔐 **DPAPI In-Memory Encryption** - Master password is wrapped with `CryptProtectMemory` (SAME_PROCESS scope) while at rest; unwrapped only for the duration of each crypto operation
+- 🔑 **Scrypt KDF** - Master password stretched with scrypt (N=65536, r=8, p=1, 128 MB maxmem) before AES key generation
 
 ### Process Hardening
 
 sage enables Windows security mitigations at startup:
 
-- Prohibits dynamic code generation
-- Requires signed images for loading
-- Enables strict handle checks
-- Restricts image loading policies
+- Prohibits dynamic code generation (`ProcessDynamicCodePolicy`)
+- Requires signed images for loading (`ProcessSignaturePolicy`)
+- Enables strict handle checks (`ProcessStrictHandleCheckPolicy`)
+- Restricts image loading to System32 and known paths (`ProcessImageLoadPolicy`)
+- Disables extension point DLLs such as AppInit and Winsock LSPs (`ProcessExtensionPointDisablePolicy`)
+- Side-channel isolation - SMT branch-target isolation, security-domain isolation, page-combine disable, SSBD, core-sharing restriction
 - Detects and blocks Remote Desktop sessions
+
+### Anti-Tamper
+
+- 🛡️ **Debugger Detection** - Three-layer check (user-mode `IsDebuggerPresent`, remote `CheckRemoteDebuggerPresent`, kernel debug port via `NtQueryInformationProcess`) - terminates with `0xDEAD` on detection
+- 💥 **Crash Dump Suppression** - Windows Error Reporting disabled and a custom unhandled-exception filter prevents memory dumps from leaking secrets
+- 🧱 **Process Access DACL** - Restrictive SDDL blocks external processes from reading memory, writing memory, duplicating handles, querying process info, or creating remote threads
+- 🔥 **Heap Hardening** - `HeapEnableTerminationOnCorruption` terminates the process immediately on heap corruption rather than allowing exploitation
+- 🧹 **Working Set Trimming** - `EmptyWorkingSet` evicts physical pages after sensitive operations, reducing the window for cold-boot or DMA attacks
+- 🔑 **SeLockMemoryPrivilege** - Requested at startup to support large-page VirtualLock; a status-bar hint guides users if the privilege is not assigned
+
+### Keylogger Protection
+
+- ⌨️ **Keyboard Hook Detection** - Timing-based heuristic detects keylogger hooks before auto-type; warns user if suspicious latency is observed
 
 ### Vault System
 
