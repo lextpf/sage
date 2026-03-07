@@ -1,4 +1,4 @@
-site_name: sage Documentation
+site_name: seal Documentation
 use_directory_urls: false
 validation:
   links:

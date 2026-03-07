@@ -42,7 +42,7 @@ jobs:
           -DENABLE_TESTS=ON
 
       - name: Build tests
-        run: cmake --build build --config Release --target sage_tests --parallel
+        run: cmake --build build --config Release --target seal_tests --parallel
 
       - name: Run tests
         run: ctest --test-dir build --build-config Release --output-on-failure

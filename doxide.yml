@@ -1,7 +1,7 @@
-# Doxide Configuration for sage
+# Doxide Configuration for seal
 # https://doxide.org
 
-title: sage
+title: seal
 description: AES-256-GCM encryption utility with Qt6 GUI and CLI modes
 
 output: docs

@@ -44,9 +44,9 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Upload sage.exe
+      - name: Upload seal.exe
         uses: actions/upload-artifact@v4
         with:
-          name: sage-windows-x64
-          path: build/bin/Release/sage.exe
+          name: seal-windows-x64
+          path: build/bin/Release/seal.exe
           retention-days: 7

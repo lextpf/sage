@@ -1,6 +1,6 @@
 <div align="center">
 
-# sage
+# seal
 **AES-256-GCM with Qt6 GUI providing on-demand credential management**
 
 🛡️ [Features](#features) | 🚅 [Quick Start](#quick-start) | 📗 [Documentation](#documentation) | 🤝 [Contributing](./CONTRIBUTING.md)
@@ -16,13 +16,13 @@
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=lextpf_sage&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=lextpf_sage)
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=lextpf_sage&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=lextpf_sage)
 <br/>
-[![build](https://github.com/lextpf/sage/actions/workflows/build.yml/badge.svg)](https://github.com/lextpf/sage/actions/workflows/build.yml)
-[![tests](https://github.com/lextpf/sage/actions/workflows/test.yml/badge.svg)](https://github.com/lextpf/sage/actions/workflows/test.yml)
+[![build](https://github.com/lextpf/seal/actions/workflows/build.yml/badge.svg)](https://github.com/lextpf/seal/actions/workflows/build.yml)
+[![tests](https://github.com/lextpf/seal/actions/workflows/test.yml/badge.svg)](https://github.com/lextpf/seal/actions/workflows/test.yml)
 <br/>
 ![Sponsor](https://img.shields.io/static/v1?label=sponsor&message=%E2%9D%A4&color=ff69b4&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NDAgNjQwIj48IS0tIUZvbnQgQXdlc29tZSBQcm8gdjcuMi4wIGJ5IEBmb250YXdlc29tZSAtIGh0dHBzOi8vZm9udGF3ZXNvbWUuY29tIExpY2Vuc2UgLSBodHRwczovL2ZvbnRhd2Vzb21lLmNvbS9saWNlbnNlIChDb21tZXJjaWFsIExpY2Vuc2UpIENvcHlyaWdodCAyMDI2IEZvbnRpY29ucywgSW5jLi0tPjxwYXRoIG9wYWNpdHk9IjEiIGZpbGw9IiNmZjY5YjRmZiIgZD0iTTMyIDQ4MEwzMiA1NDRDMzIgNTYxLjcgNDYuMyA1NzYgNjQgNTc2TDM4NC41IDU3NkM0MTMuNSA1NzYgNDQxLjggNTY2LjcgNDY1LjIgNTQ5LjVMNTkxLjggNDU2LjJDNjA5LjYgNDQzLjEgNjEzLjQgNDE4LjEgNjAwLjMgNDAwLjNDNTg3LjIgMzgyLjUgNTYyLjIgMzc4LjcgNTQ0LjQgMzkxLjhMNDI0LjYgNDgwTDMxMiA0ODBDMjk4LjcgNDgwIDI4OCA0NjkuMyAyODggNDU2QzI4OCA0NDIuNyAyOTguNyA0MzIgMzEyIDQzMkwzODQgNDMyQzQwMS43IDQzMiA0MTYgNDE3LjcgNDE2IDQwMEM0MTYgMzgyLjMgNDAxLjcgMzY4IDM4NCAzNjhMMjMxLjggMzY4QzE5Ny45IDM2OCAxNjUuMyAzODEuNSAxNDEuMyA0MDUuNUw5OC43IDQ0OEw2NCA0NDhDNDYuMyA0NDggMzIgNDYyLjMgMzIgNDgweiIvPjxwYXRoIGZpbGw9InJnYmEoMjU1LCAyNTUsIDI1NSwgMS4wMCkiIGQ9Ik0yNTAuOSA2NEMyNzQuOSA2NCAyOTcuNSA3NS41IDMxMS42IDk1TDMyMCAxMDYuN0wzMjguNCA5NUMzNDIuNSA3NS41IDM2NS4xIDY0IDM4OS4xIDY0QzQzMC41IDY0IDQ2NCA5Ny41IDQ2NCAxMzguOUw0NjQgMTQxLjNDNDY0IDIwNS43IDM4MiAyNzQuNyAzNDEuOCAzMDQuNkMzMjguOCAzMTQuMyAzMTEuMyAzMTQuMyAyOTguMyAzMDQuNkMyNTguMSAyNzQuNiAxNzYgMjA1LjcgMTc2LjEgMTQxLjNMMTc2LjEgMTM4LjlDMTc2IDk3LjUgMjA5LjUgNjQgMjUwLjkgNjR6Ii8+PC9zdmc+)
 </div>
 
-**An encryption and credential manager** built with **C++23** and powered by *OpenSSL* **AES-256-GCM**.It pairs a *Qt6* interface, where credentials are stored **encrypted** and only *decrypted on demand*, with a *streaming CLI* that slots into **pipes** and **scripts**. sage can encrypt *individual files*, *entire directories*, or *inline text*, and fills credentials directly into applications via its *auto-fill controller*. Under the hood, every secret sits in **hardened memory** - *locked pages*, *guard pages*, *canary sentinels* and the clipboard is **scrubbed automatically** if used.
+**An encryption and credential manager** built with **C++23** and powered by *OpenSSL* **AES-256-GCM**.It pairs a *Qt6* interface, where credentials are stored **encrypted** and only *decrypted on demand*, with a *streaming CLI* that slots into **pipes** and **scripts**. seal can encrypt *individual files*, *entire directories*, or *inline text*, and fills credentials directly into applications via its *auto-fill controller*. Under the hood, every secret sits in **hardened memory** - *locked pages*, *guard pages*, *canary sentinels* and the clipboard is **scrubbed automatically** if used.
 
 <div align="center">
 <br>
@@ -32,7 +32,7 @@
 </div>
 
 > [!IMPORTANT]
-> **Windows 10/11 Only** - sage enforces Windows-specific security mitigations and will not build on other platforms.
+> **Windows 10/11 Only** - seal enforces Windows-specific security mitigations and will not build on other platforms.
 >
 > - For best protection, enable `SeLockMemoryPrivilege` via Group Policy (`gpedit.msc` -> Local Policies -> User Rights Assignment -> Lock pages in memory).
 > - UI icons use [Font Awesome Pro 7.2](https://fontawesome.com/) SVGs, which are **not included** in this repository due to their commercial license. You must supply your own `assets/svgs/` from a valid Font Awesome Pro subscription.
@@ -41,13 +41,13 @@
 /*  ============================================================================================  *
  *                                                            ⠀⣠⡤⠀⢀⣀⣀⡀⠀⠀⠀⠀⣦⡀⠀⠀⠀⠀⠀⠀
  *                                                            ⠀⠘⠃⠈⢿⡏⠉⠉⠀⢀⣀⣰⣿⣿⡄⠀⠀⠀⠀⢀
- *           ::::::::      :::      ::::::::  ::::::::::      ⠀⠀⠀⠀⠀⢹⠀⠀⠀⣸⣿⡿⠉⠿⣿⡆⠀⠰⠿⣿
- *          :+:    :+:   :+: :+:   :+:    :+: :+:             ⠀⠀⠀⠀⠀⢀⣠⠾⠿⠿⠿⠀⢰⣄⠘⢿⠀⠀⠀⠞
- *          +:+         +:+   +:+  +:+        +:+             ⢲⣶⣶⡂⠐⢉⣀⣤⣶⣶⡦⠀⠈⣿⣦⠈⠀⣾⡆⠀
- *          +#++:++#++ +#++:++#++: :#:        +#++:++#        ⠀⠀⠿⣿⡇⠀⠀⠀⠙⢿⣧⠀⠳⣿⣿⡀⠸⣿⣿⠀
- *                 +#+ +#+     +#+ +#+   +#+# +#+             ⠀⠀⠐⡟⠁⠀⠀⢀⣴⣿⠛⠓⠀⣉⣿⣿⢠⡈⢻⡇
- *          #+#    #+# #+#     #+# #+#    #+# #+#             ⠀⠀⠀⠀⠀⠀⠀⣾⣿⣿⣆⠀⢹⣿⣿⣷⡀⠁⢸⡇
- *           ########  ###     ###  ########  ##########      ⠀⠀⠀⠀⠀⠀⠘⠛⠛⠉⠀⠀⠈⠙⠛⠿⢿⣶⣼⠃
+ *           ::::::::  ::::::::::     :::     :::             ⠀⠀⠀⠀⠀⢹⠀⠀⠀⣸⣿⡿⠉⠿⣿⡆⠀⠰⠿⣿
+ *          :+:    :+: :+:          :+: :+:   :+:             ⠀⠀⠀⠀⠀⢀⣠⠾⠿⠿⠿⠀⢰⣄⠘⢿⠀⠀⠀⠞
+ *          +:+        +:+         +:+   +:+  +:+             ⢲⣶⣶⡂⠐⢉⣀⣤⣶⣶⡦⠀⠈⣿⣦⠈⠀⣾⡆⠀
+ *          +#++:++#++ +#++:++#   +#++:++#++: +#+             ⠀⠀⠿⣿⡇⠀⠀⠀⠙⢿⣧⠀⠳⣿⣿⡀⠸⣿⣿⠀
+ *                 +#+ +#+        +#+     +#+ +#+             ⠀⠀⠐⡟⠁⠀⠀⢀⣴⣿⠛⠓⠀⣉⣿⣿⢠⡈⢻⡇
+ *          #+#    #+# #+#        #+#     #+# #+#             ⠀⠀⠀⠀⠀⠀⠀⣾⣿⣿⣆⠀⢹⣿⣿⣷⡀⠁⢸⡇
+ *           ########  ########## ###     ### ##########      ⠀⠀⠀⠀⠀⠀⠘⠛⠛⠉⠀⠀⠈⠙⠛⠿⢿⣶⣼⠃
  *                                                            ⠀⠀⠀⢰⣧⣤⠤⠖⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
  *
  *                                  << P A S S   M A N A G E R >>
@@ -59,7 +59,7 @@
 
 ### Interface
 
-sage ships with a **Qt6 QML** graphical manager and a **streaming CLI** for scripts and automation.
+seal ships with a **Qt6 QML** graphical manager and a **streaming CLI** for scripts and automation.
 
 ```mermaid
 ---
@@ -132,7 +132,7 @@ graph LR
 
 ### Process Hardening
 
-sage enables Windows security mitigations at startup:
+seal enables Windows security mitigations at startup:
 
 - Prohibits dynamic code generation (`ProcessDynamicCodePolicy`)
 - Requires signed images for loading (`ProcessSignaturePolicy`)
@@ -153,7 +153,7 @@ sage enables Windows security mitigations at startup:
 
 ### Vault System
 
-Credentials are stored in `.sage` files using **on-demand decryption** - each record stays encrypted until the moment you need it.
+Credentials are stored in `.seal` files using **on-demand decryption** - each record stays encrypted until the moment you need it.
 
 |  Component | Description                                         |
 |------------|-----------------------------------------------------|
@@ -197,17 +197,17 @@ Credentials are stored in `.sage` files using **on-demand decryption** - each re
 
 ```powershell
 # 1. Clone the repository
-git clone https://github.com/lextpf/sage.git
-cd sage
+git clone https://github.com/lextpf/seal.git
+cd seal
 
 # 2. Build (configure + compile + docs)
 .\build.bat
 
 # 3. Run
-.\build\bin\Release\sage.exe
+.\build\bin\Release\seal.exe
 ```
 
-Output: `build/bin/Release/sage.exe`
+Output: `build/bin/Release/seal.exe`
 
 ## Architecture
 
@@ -267,7 +267,7 @@ graph TB
 ## Project Structure
 
 ```
-sage/
+seal/
 |-- src/                        # C++ source code
 |   |-- main.cpp                # Entry point and CLI parsing
 |   |-- Cryptography.cpp/h      # AES-256-GCM, scrypt key derivation
@@ -319,7 +319,7 @@ The site is output to `site/` and can be served locally with `mkdocs serve`.
 |                  Problem | Solution                                                                |
 |--------------------------|-------------------------------------------------------------------------|
 | `SeLockMemoryPrivilege`  | Enable via `gpedit.msc` -> Local Policies -> User Rights Assignment     |
-| Remote Desktop blocked   | Intended - sage refuses to run over RDP for security                    |
+| Remote Desktop blocked   | Intended - seal refuses to run over RDP for security                    |
 | vcpkg ninja crash        | Known issue with bundled ninja 1.13.2, retry or use system ninja        |
 | Qt plugins not found     | Ensure `windeployqt` ran during build, check `qt.conf` paths            |
 

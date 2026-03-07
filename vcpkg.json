@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "name": "sage",
+  "name": "seal",
   "version": "1.0.0",
   "description": "AES-256-GCM encrypt/decrypt console utility with locked memory and guard pages",
-  "homepage": "https://github.com/yourusername/sage",
+  "homepage": "https://github.com/yourusername/seal",
   "license": "MIT",
   "dependencies": [
     "openssl",
