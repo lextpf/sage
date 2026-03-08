@@ -116,7 +116,25 @@ echo Buildtrees Root:      %VCPKG_BUILDTREES_ROOT%
 echo Build Directory:      %BUILD_DIR%
 echo.
 
-echo [1/3] Configuring with CMake...
+REM ============================================================================
+REM STEP 1: Format Source Code (clang-format)
+REM ============================================================================
+echo [1/5] Formatting source code...
+echo ----------------------------------------------------------------------------
+where clang-format >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo SKIP: clang-format not found in PATH
+) else (
+    for %%f in (src\*.cpp src\*.h src\*.hpp src\*.c) do (
+        if exist "%%f" (
+            clang-format -i "%%f"
+        )
+    )
+    echo Formatting complete.
+)
+echo.
+
+echo [2/4] Configuring with CMake...
 echo ----------------------------------------------------------------------------
 cmake -S "%REPO_ROOT%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 %CMAKE_TOOLSET_ARG% ^
   -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN_FILE%" ^
@@ -133,7 +151,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [2/3] Building Release...
+echo [3/4] Building Release...
 echo ----------------------------------------------------------------------------
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 (
@@ -142,7 +160,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/3] Generating API documentation...
+echo [4/4] Generating API documentation...
 echo ----------------------------------------------------------------------------
 where doxide >nul 2>&1
 if errorlevel 1 (
