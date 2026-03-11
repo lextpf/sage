@@ -53,18 +53,32 @@ namespace seal
 {
 /**
  * @namespace seal::cfg
- * @brief Cryptographic and framing constants.
+ * @brief Cryptographic and framing constants for AES-256-GCM encryption.
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
+ *
+ * Packet wire format:
+ * $[\text{AAD}_{4} \mid \text{Salt}_{16} \mid \text{IV}_{12} \mid \text{CT}_{n} \mid
+ * \text{Tag}_{16}]$ where $n = |\text{plaintext}|$.
+ *
+ * scrypt memory usage: $M = 128 \cdot r \cdot N = 128 \cdot 8 \cdot 2^{16} = 64\text{ MiB}$.
  */
 namespace cfg
 {
-static constexpr size_t SALT_LEN = 16;
-static constexpr size_t KEY_LEN = 32;
-static constexpr size_t IV_LEN = 12;
-static constexpr size_t TAG_LEN = 16;
-static constexpr size_t FILE_CHUNK = 1 << 20;
-static constexpr char AAD_HDR[] = "SAGE$";  // kept for backwards compat
-static constexpr size_t AAD_LEN = sizeof(AAD_HDR) - 1;
+static constexpr size_t SALT_LEN = 16;         ///< scrypt salt length in bytes.
+static constexpr size_t KEY_LEN = 32;          ///< AES-256 key length in bytes.
+static constexpr size_t IV_LEN = 12;           ///< AES-GCM initialisation vector length in bytes.
+static constexpr size_t TAG_LEN = 16;          ///< GCM authentication tag length in bytes.
+static constexpr size_t FILE_CHUNK = 1 << 20;  ///< Read-buffer chunk size (1 MiB).
+static constexpr char AAD_HDR[] = "seal";      ///< Additional authenticated data header
+static constexpr size_t AAD_LEN =
+    sizeof(AAD_HDR) - 1;  ///< AAD header length excluding null terminator.
+static constexpr uint64_t SCRYPT_N =
+    1ULL << 16;                          ///< scrypt CPU/memory cost parameter ($2^{16} = 65536$).
+static constexpr uint64_t SCRYPT_R = 8;  ///< scrypt block size parameter.
+static constexpr uint64_t SCRYPT_P = 1;  ///< scrypt parallelisation parameter.
+static constexpr uint64_t SCRYPT_MAXMEM =
+    128ULL * 1024 * 1024;  ///< scrypt maximum memory allowance (128 MiB, ~2x working set).
 }  // namespace cfg
 
 /// @brief Concept for byte-addressable element types.
@@ -83,14 +97,21 @@ static inline size_t align_up(size_t v, size_t a)
     return (v + (a - 1)) & ~(a - 1);
 }
 
-static constexpr uint32_t kMagic = 0x53524950u;  //!< Header integrity magic ("PRIS")
+static constexpr uint32_t kMagic = 0x6C616573u;  //!< Header integrity magic ("seal")
 static constexpr uint32_t kVersion = 1u;         //!< Header version number
 static constexpr size_t kCanaryBytes = 32;       //!< Canary bytes after payload (0xD0)
 
 /**
+ * @struct locked_header
  * @brief Per-allocation metadata for guarded regions.
  * @author Alex (https://github.com/lextpf)
  * @ingroup Crypto
+ *
+ * Stored at the start of the committed region, immediately after the
+ * front guard page. The header is page-aligned so that payload
+ * protection changes (via VirtualProtect) never affect the header.
+ *
+ * @see locked_allocator, header_from_payload
  */
 struct locked_header
 {
@@ -104,13 +125,24 @@ struct locked_header
     uint32_t version;    //!< Header version (must match kVersion)
 };
 
+/// @brief Cached system page size (thread-safe, computed once).
+inline SIZE_T cachedPageSize()
+{
+    static const SIZE_T ps = []
+    {
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        return si.dwPageSize ? si.dwPageSize : 4096;
+    }();
+    return ps;
+}
+
 /// @brief Reconstruct allocation header from a payload pointer.
+/// @pre @p payload was returned by locked_allocator::allocate().
 template <class T>
 inline locked_header* header_from_payload(const T* payload)
 {
-    SYSTEM_INFO si{};
-    GetSystemInfo(&si);
-    SIZE_T page = si.dwPageSize ? si.dwPageSize : 4096;
+    SIZE_T page = cachedPageSize();
     // The header sits exactly one page-aligned header block before the payload.
     // allocate() placed the payload at (middle + headerSize), so we reverse that.
     SIZE_T headerSize = align_up(sizeof(locked_header), page);
@@ -119,10 +151,37 @@ inline locked_header* header_from_payload(const T* payload)
 }
 
 /**
- * @brief Secure allocator with guard pages and page locking.
- * @ingroup Crypto
+ * @brief Secure allocator with guard pages, canary sentinels, and page locking.
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
  * @tparam T Element type to allocate.
+ *
+ * Memory layout per allocation:
+ *
+ * ```mermaid
+ * ---
+ * config:
+ *   theme: dark
+ * ---
+ * flowchart LR
+ *     classDef guard fill:#7f1d1d,stroke:#ef4444,color:#fca5a5
+ *     classDef hdr fill:#1e3a5f,stroke:#3b82f6,color:#e2e8f0
+ *     classDef pay fill:#1e4a3a,stroke:#22c55e,color:#e2e8f0
+ *
+ *     G1["Guard Page<br/>NOACCESS"]:::guard
+ *     H["Header<br/>(locked_header)"]:::hdr
+ *     P["Payload + Canary<br/>READWRITE"]:::pay
+ *     G2["Guard Page<br/>NOACCESS"]:::guard
+ *
+ *     G1 --> H --> P --> G2
+ * ```
+ *
+ * - Guard pages trap out-of-bounds reads/writes.
+ * - Committed pages are pinned in RAM via VirtualLock (best-effort).
+ * - Canary bytes (0xD0) after the payload detect buffer overruns.
+ * - deallocate() verifies the canary and calls `__fastfail` on corruption.
+ *
+ * @see locked_header, protect_noaccess, protect_readwrite
  */
 template <class T>
 struct locked_allocator
@@ -135,16 +194,21 @@ struct locked_allocator
     {
     }
 
-    /// @brief Allocate n objects in a locked, guarded region.
+    /**
+     * @brief Allocate @p n objects in a locked, guarded region.
+     * @param n Number of objects to allocate (clamped to 1 if zero).
+     * @return Pointer to the payload region within the guarded allocation.
+     * @throw std::bad_alloc on overflow or if VirtualAlloc fails.
+     */
     T* allocate(std::size_t n)
     {
         if (n == 0)
             n = 1;
+        if (n > SIZE_MAX / sizeof(T))
+            throw std::bad_alloc();
         SIZE_T needBytes = n * sizeof(T);
 
-        SYSTEM_INFO si{};
-        GetSystemInfo(&si);
-        SIZE_T page = si.dwPageSize ? si.dwPageSize : 4096;
+        SIZE_T page = cachedPageSize();
 
         // Layout: [guard page | header | payload + canary + slack | guard page]
         // The header is page-aligned so VirtualProtect can change payload
@@ -192,7 +256,13 @@ struct locked_allocator
         return reinterpret_cast<T*>(payload);
     }
 
-    /// @brief Deallocate and securely wipe a prior allocation.
+    /**
+     * @brief Deallocate and securely wipe a prior allocation.
+     * @param p Payload pointer returned by allocate() (null is a no-op).
+     *
+     * Verifies the header magic and canary bytes. On corruption, calls
+     * `__fastfail` (MSVC) or `std::terminate` to prevent exploitation.
+     */
     void deallocate(T* p, std::size_t) noexcept
     {
         if (!p)
@@ -258,8 +328,9 @@ struct locked_allocator
             SecureZeroMemory(bytes, payloadSpan);
         (void)VirtualProtect(bytes, payloadSpan, oldProt, &dummy);
 
-#if defined(_DEBUG)
-        // In debug builds, treat a genuine overrun as fatal for early detection.
+        // A genuine canary mismatch (not caused by pre-wiping) means a buffer
+        // overrun occurred. This is a security-critical condition - crash
+        // immediately to prevent exploitation.
         if (!canary_ok && !looks_wiped)
         {
 #ifdef _MSC_VER
@@ -268,13 +339,6 @@ struct locked_allocator
             std::terminate();
 #endif
         }
-#else
-        // In release, log a warning but don't crash - the data is already wiped.
-        if (!canary_ok && !looks_wiped)
-        {
-            OutputDebugStringA("[seal] WARN: canary mismatch on free (not wiped)\n");
-        }
-#endif
 
         // Wipe the header so metadata (pointers, sizes) doesn't linger in memory.
         SecureZeroMemory(hdr, sizeof(locked_header));
@@ -307,6 +371,7 @@ inline bool operator!=(const locked_allocator<T>&, const locked_allocator<U>&)
 }
 
 /// @brief Switch the payload protection to PAGE_NOACCESS.
+/// @pre @p p was returned by locked_allocator::allocate() (or is null).
 template <class T>
 inline void protect_noaccess(const T* p)
 {
@@ -319,6 +384,7 @@ inline void protect_noaccess(const T* p)
 }
 
 /// @brief Switch the payload protection to PAGE_READWRITE.
+/// @pre @p p was returned by locked_allocator::allocate() (or is null).
 template <class T>
 inline void protect_readwrite(const T* p)
 {
@@ -331,9 +397,17 @@ inline void protect_readwrite(const T* p)
 }
 
 /**
- * @brief Secure string with locked, guarded memory.
+ * @brief Move-only secure string backed by locked, guard-paged memory.
  * @author Alex (https://github.com/lextpf)
  * @ingroup Crypto
+ *
+ * All character data lives in VirtualAlloc'd pages that are pinned in
+ * physical RAM and bordered by PAGE_NOACCESS guard pages. Copy is
+ * deleted; only move semantics are supported.
+ *
+ * @tparam A Allocator type (default: locked_allocator\<char\>).
+ *
+ * @see locked_allocator, protect_noaccess, protect_readwrite
  */
 template <class A = locked_allocator<char>>
 struct secure_string
@@ -355,25 +429,56 @@ struct secure_string
     }
     ~secure_string() { clear(); }
 
+    /// @brief Append a character to the string.
     void push_back(char c) { s.push_back(c); }
+
+    /// @brief Remove the last character (no-op if empty).
     void pop_back()
     {
         if (!s.empty())
             s.pop_back();
     }
+
+    /// @brief Check whether the string is empty.
     bool empty() const { return s.empty(); }
+
+    /// @brief Return the number of characters stored.
     size_t size() const { return s.size(); }
+
+    /// @brief Return a mutable pointer to the underlying buffer.
     char* data() { return s.data(); }
+
+    /// @brief Return a const pointer to the underlying buffer.
     const char* data() const { return s.data(); }
+
+    /// @brief Return a non-owning string_view over the contents.
     std::string_view view() const noexcept { return {s.data(), s.size()}; }
 
+    /**
+     * @brief Return a null-terminated C string.
+     *
+     * Appends a null terminator if one is not already present.
+     * This may reallocate the underlying buffer.
+     *
+     * @return Pointer to the null-terminated data.
+     */
     const char* c_str()
     {
         if (s.empty() || s.back() != '\0')
+        {
+            if (s.size() == s.capacity())
+                s.reserve(s.size() + 1);
             s.push_back('\0');
+        }
         return s.data();
     }
 
+    /**
+     * @brief Securely wipe and release all memory.
+     *
+     * Restores PAGE_READWRITE if needed, zeroes the buffer with
+     * `SecureZeroMemory`, then releases the guarded allocation.
+     */
     void clear()
     {
         if (!s.empty())
@@ -401,12 +506,28 @@ struct secure_string
         }
     }
 
+    /**
+     * @brief Copy contents into a regular std::string.
+     * @return A heap-allocated copy in pageable memory.
+     * @warning The returned string is **not** in locked memory and may be
+     *          swapped to disk. Use only when an insecure copy is acceptable.
+     */
     std::string str_copy() const { return std::string(s.data(), s.data() + s.size()); }
 };
 
 /**
- * @brief Wide secure string for arbitrary code unit types.
+ * @brief Move-only secure string for arbitrary wide code unit types.
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
+ *
+ * Generalisation of secure_string for `wchar_t`, `char16_t`, etc.
+ * All data lives in locked, guard-paged memory. Copy is deleted;
+ * only move semantics are supported.
+ *
+ * @tparam CharT Character type (e.g. `wchar_t`, `char16_t`).
+ * @tparam A     Allocator type (default: locked_allocator\<CharT\>).
+ *
+ * @see secure_string, locked_allocator
  */
 template <class CharT, class A = locked_allocator<CharT>>
 struct basic_secure_string
@@ -428,25 +549,56 @@ struct basic_secure_string
     }
     ~basic_secure_string() { clear(); }
 
+    /// @brief Append a code unit to the string.
     void push_back(CharT c) { s.push_back(c); }
+
+    /// @brief Remove the last code unit (no-op if empty).
     void pop_back()
     {
         if (!s.empty())
             s.pop_back();
     }
+
+    /// @brief Check whether the string is empty.
     bool empty() const { return s.empty(); }
+
+    /// @brief Return the number of code units stored.
     size_t size() const { return s.size(); }
+
+    /// @brief Return a mutable pointer to the underlying buffer.
     CharT* data() { return s.data(); }
+
+    /// @brief Return a const pointer to the underlying buffer.
     const CharT* data() const { return s.data(); }
+
+    /// @brief Return a non-owning string_view over the contents.
     std::basic_string_view<CharT> view() const noexcept { return {s.data(), s.size()}; }
 
+    /**
+     * @brief Return a null-terminated wide C string.
+     *
+     * Appends a zero code unit if one is not already present.
+     *
+     * @return Pointer to the null-terminated data.
+     */
     const CharT* c_str()
     {
         if (s.empty() || s.back() != CharT{})
+        {
+            if (s.size() == s.capacity())
+                s.reserve(s.size() + 1);
             s.push_back(CharT{});
+        }
         return s.data();
     }
 
+    /**
+     * @brief Securely wipe and release all memory.
+     *
+     * Restores PAGE_READWRITE if needed, zeroes the buffer with
+     * `SecureZeroMemory` (accounting for `sizeof(CharT)`), then
+     * releases the guarded allocation.
+     */
     void clear()
     {
         if (!s.empty())
@@ -471,13 +623,30 @@ struct basic_secure_string
         }
     }
 
+    /**
+     * @brief Copy contents into a regular std::basic_string.
+     * @return A heap-allocated copy in pageable memory.
+     * @warning The returned string is **not** in locked memory and may be
+     *          swapped to disk. Use only when an insecure copy is acceptable.
+     */
     std::basic_string<CharT> str_copy() const
     {
         return std::basic_string<CharT>(s.data(), s.data() + s.size());
     }
 };
 
-/// @brief RAII guard to temporarily set a locked payload to RW.
+/**
+ * @struct RWGuard
+ * @brief RAII guard that temporarily sets a locked payload to PAGE_READWRITE.
+ * @ingroup Crypto
+ * @tparam T Element type of the guarded allocation.
+ *
+ * On construction, flips the payload protection to PAGE_READWRITE.
+ * On destruction, restores the original protection (typically PAGE_NOACCESS).
+ * Non-copyable and non-movable.
+ *
+ * @pre The pointer must have been returned by locked_allocator::allocate().
+ */
 template <class T>
 struct RWGuard
 {
@@ -510,7 +679,10 @@ struct RWGuard
 };
 
 /**
+ * @struct DPAPIGuard
  * @brief RAII guard for DPAPI in-memory encryption of secure strings.
+ * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
  *
  * Wraps CryptProtectMemory / CryptUnprotectMemory with SAME_PROCESS scope.
  * The buffer is encrypted on construction and decrypted only during
@@ -529,16 +701,19 @@ struct DPAPIGuard
 
     SecStr* m_Str = nullptr;
     bool m_Protected = false;
+    size_t m_OriginalSize = 0;  ///< Pre-pad logical size, restored after unprotect.
 
     DPAPIGuard() = default;
     explicit DPAPIGuard(SecStr* str) : m_Str(str) { protect(); }
 
     DPAPIGuard(const DPAPIGuard&) = delete;
     DPAPIGuard& operator=(const DPAPIGuard&) = delete;
-    DPAPIGuard(DPAPIGuard&& o) noexcept : m_Str(o.m_Str), m_Protected(o.m_Protected)
+    DPAPIGuard(DPAPIGuard&& o) noexcept
+        : m_Str(o.m_Str), m_Protected(o.m_Protected), m_OriginalSize(o.m_OriginalSize)
     {
         o.m_Str = nullptr;
         o.m_Protected = false;
+        o.m_OriginalSize = 0;
     }
     DPAPIGuard& operator=(DPAPIGuard&& o) noexcept
     {
@@ -547,35 +722,52 @@ struct DPAPIGuard
             release();
             m_Str = o.m_Str;
             m_Protected = o.m_Protected;
+            m_OriginalSize = o.m_OriginalSize;
             o.m_Str = nullptr;
             o.m_Protected = false;
+            o.m_OriginalSize = 0;
         }
         return *this;
     }
 
     ~DPAPIGuard() { release(); }
 
-    void protect()
+    /// @return true if DPAPI encryption succeeded, false on failure or no-op.
+    bool protect()
     {
         if (!m_Str || m_Str->empty() || m_Protected)
-            return;
+            return false;
+        m_OriginalSize = m_Str->s.size();
         padToBlockSize();
         seal::protect_readwrite(m_Str->s.data());
         DWORD cbData = static_cast<DWORD>(m_Str->s.size() * sizeof(char_type));
         if (CryptProtectMemory(m_Str->s.data(), cbData, CRYPTPROTECTMEMORY_SAME_PROCESS))
+        {
             m_Protected = true;
+            return true;
+        }
+        return false;
     }
 
-    void unprotect()
+    /// @return true if DPAPI decryption succeeded, false on failure or no-op.
+    bool unprotect()
     {
         if (!m_Str || m_Str->empty() || !m_Protected)
-            return;
+            return false;
         seal::protect_readwrite(m_Str->s.data());
         DWORD cbData = static_cast<DWORD>(m_Str->s.size() * sizeof(char_type));
         if (CryptUnprotectMemory(m_Str->s.data(), cbData, CRYPTPROTECTMEMORY_SAME_PROCESS))
+        {
             m_Protected = false;
+            // Restore the original logical size (remove DPAPI block padding).
+            if (m_OriginalSize > 0 && m_OriginalSize < m_Str->s.size())
+                m_Str->s.resize(m_OriginalSize);
+            return true;
+        }
+        return false;
     }
 
+    /// @brief Re-encrypt the buffer (convenience alias for protect()).
     void reprotect() { protect(); }
 
 private:
@@ -605,14 +797,24 @@ private:
 };
 
 /**
- * @brief RAII console mode guard.
+ * @struct scoped_console
+ * @brief RAII console mode guard that saves and restores console input mode.
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
+ *
+ * Snapshots the current console mode on construction and restores it
+ * on destruction, ensuring the terminal is never left in an altered
+ * state after masked input or mouse-enabled hit-testing.
  */
 struct scoped_console
 {
-    HANDLE h;
-    DWORD oldMode{};
-    bool changed{false};
+    HANDLE h;             ///< Console handle being guarded.
+    DWORD oldMode{};      ///< Saved console mode, restored on destruction.
+    bool changed{false};  ///< Whether SetConsoleMode succeeded.
+
+    /// @brief Snapshot the current console mode and apply @p mode.
+    /// @param handle Console input or output handle.
+    /// @param mode   Desired console mode flags (e.g. ENABLE_MOUSE_INPUT).
     scoped_console(HANDLE handle, DWORD mode) : h(handle)
     {
         // Snapshot the current mode so we can restore it in the destructor,
@@ -633,7 +835,16 @@ struct scoped_console
     scoped_console& operator=(const scoped_console&) = delete;
 };
 
-/// @brief RAII owner for EVP_CIPHER_CTX.
+/**
+ * @struct EVP_CTX
+ * @brief RAII owner for an OpenSSL EVP_CIPHER_CTX.
+ * @ingroup Crypto
+ *
+ * Allocates a cipher context on construction and frees it on
+ * destruction. Non-copyable.
+ *
+ * @throw std::runtime_error if EVP_CIPHER_CTX_new() fails.
+ */
 struct EVP_CTX
 {
     EVP_CIPHER_CTX* p{nullptr};
@@ -656,11 +867,39 @@ struct EVP_CTX
  * @brief AES-256-GCM encryption, scrypt key derivation, and secure memory.
  * @author Alex (https://github.com/lextpf)
  * @ingroup Crypto
+ *
+ * Static utility class providing the cryptographic core for seal.
+ * All methods are stateless and thread-safe.
+ *
+ * ## :material-lock: Encryption
+ *
+ * encryptPacket() / decryptPacket() implement framed AES-256-GCM with
+ * scrypt key derivation. Each packet carries its own random salt and IV
+ * so no external state is needed.
+ *
+ * ## :material-shield: Process Hardening
+ *
+ * A suite of static methods hardens the process against memory
+ * disclosure and debugging attacks:
+ * - hardenHeap() - enables heap termination on corruption
+ * - hardenProcessAccess() - restricts DACL to block external memory reads
+ * - disableCrashDumps() - suppresses WER and crash dumps
+ * - detectDebugger() - aborts if a debugger is attached
+ * - setSecureProcessMitigations() - enables DEP, CFG, ASLR, image-load policies
+ * - trimWorkingSet() - flushes plaintext from physical RAM
+ *
+ * @see locked_allocator, secure_string, cfg
  */
 class Cryptography
 {
 public:
-    /// @brief Constant-time byte comparison.
+    /**
+     * @brief Constant-time byte comparison.
+     * @param a First buffer.
+     * @param b Second buffer.
+     * @param n Number of bytes to compare.
+     * @return `true` if all @p n bytes are identical.
+     */
     static bool ctEqualRaw(const unsigned char* a, const unsigned char* b, size_t n);
 
     /// @brief Constant-time equality for byte-like ranges.
@@ -695,31 +934,62 @@ public:
         return ctEqualAny(a.s, b.s);
     }
 
-    /// @brief Enable heap termination on corruption.
+    /// @brief Enable heap termination on corruption via `HeapSetInformation`.
+    /// @post The process heap is configured to terminate on detected corruption
+    ///       rather than returning an error code.
     static void hardenHeap();
 
-    /// @brief Set a restrictive DACL on the current process to block memory reads.
+    /// @brief Set a restrictive DACL on the current process to block external memory reads.
+    /// @post The process DACL denies PROCESS_VM_READ to all non-SYSTEM principals,
+    ///       preventing tools like Process Hacker from dumping secrets.
     static void hardenProcessAccess();
 
     /// @brief Suppress crash dumps and WER dialogs to prevent memory disclosure.
+    /// @post MiniDumpWriteDump, WER, and Dr. Watson are disabled so a crash
+    ///       does not write plaintext secrets to disk.
     static void disableCrashDumps();
 
     /// @brief Detect attached debuggers and abort if found.
+    /// @post If `IsDebuggerPresent()` or `NtQueryInformationProcess` detects
+    ///       a debugger, the process calls `__fastfail` immediately.
     static void detectDebugger();
 
-    /// @brief Trim the working set to reduce plaintext residency in physical RAM.
+    /// @brief Trim the working set via `SetProcessWorkingSetSize(-1, -1)`.
+    /// @post Dirty pages containing decrypted secrets are flushed from
+    ///       physical RAM, reducing the window for cold-boot or swap-file recovery.
     static void trimWorkingSet();
 
-    /// @brief Apply process-wide security mitigations.
+    /**
+     * @brief Apply process-wide security mitigations (DEP, CFG, image load, etc.).
+     * @param allowDynamicCode `true` to permit dynamic code generation
+     *        (required for Qt QML's V4 JIT engine); `false` for stricter CLI mode.
+     * @return Windows `BOOL` - `TRUE` on success, `FALSE` on failure.
+     */
     static BOOL setSecureProcessMitigations(bool allowDynamicCode);
 
-    /// @brief Enable SeLockMemoryPrivilege if available.
+    /**
+     * @brief Enable SeLockMemoryPrivilege if available.
+     * @return `TRUE` if the privilege was enabled, `FALSE` if not available
+     *         (non-admin accounts typically lack this privilege).
+     */
     static BOOL tryEnableLockPrivilege();
 
-    /// @brief Securely wipe and release containers.
+    /// @brief Base case for the variadic cleanseString fold expression (no-op).
     static void cleanseString() noexcept
     { /* Base case for variadic fold expression - intentionally empty */ }
 
+    /**
+     * @brief Securely wipe and release one or more containers.
+     *
+     * Accepts any mix of `std::string`, `std::vector<byte>`, `secure_string`,
+     * `basic_secure_string`, or raw `CharT*` pointers. Each argument is
+     * zeroed with `OPENSSL_cleanse` or `SecureZeroMemory` (depending on
+     * allocator type) and then released. Locked-page buffers have their
+     * protection restored to PAGE_READWRITE before wiping.
+     *
+     * @tparam Ts Argument types (deduced).
+     * @param xs Containers or pointers to wipe.
+     */
     template <class... Ts>
     static void cleanseString(Ts&&... xs) noexcept
     {
@@ -729,12 +999,30 @@ public:
     /// @brief Detect Remote Desktop session.
     static bool isRemoteSession() { return GetSystemMetrics(SM_REMOTESESSION) != 0; }
 
-    /// @brief Encrypt plaintext into a framed AES-256-GCM packet.
+    /**
+     * @brief Encrypt plaintext into a framed AES-256-GCM packet.
+     *
+     * Packet format: `AAD(4) | Salt(16) | IV(12) | Ciphertext(n) | Tag(16)`.
+     *
+     * @tparam SecurePwd Secure password container with `.data()` and `.size()`.
+     * @param plaintext Raw bytes to encrypt.
+     * @param password  Master password for scrypt key derivation.
+     * @return The framed encrypted packet.
+     * @throw std::runtime_error on OpenSSL failure.
+     */
     template <class SecurePwd>
     [[nodiscard]] static std::vector<unsigned char> encryptPacket(
         std::span<const unsigned char> plaintext, const SecurePwd& password);
 
-    /// @brief Decrypt a framed AES-256-GCM packet.
+    /**
+     * @brief Decrypt a framed AES-256-GCM packet.
+     *
+     * @tparam SecurePwd Secure password container with `.data()` and `.size()`.
+     * @param packet   Framed encrypted packet (as produced by encryptPacket()).
+     * @param password Master password for scrypt key derivation.
+     * @return Decrypted plaintext bytes.
+     * @throw std::runtime_error on authentication failure or malformed packet.
+     */
     template <class SecurePwd>
     [[nodiscard]] static std::vector<unsigned char> decryptPacket(
         std::span<const unsigned char> packet, const SecurePwd& password);
@@ -829,13 +1117,17 @@ private:
 };
 
 /**
- * @brief RAII holder for three narrow secure strings.
+ * @brief Move-only holder for three narrow secure strings (service, username, password).
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
+ * @tparam A Locked allocator type (default: locked_allocator\<char\>).
  */
 template <class A = seal::locked_allocator<char>>
 struct secure_triplet
 {
-    seal::secure_string<A> service, user, pass;
+    seal::secure_string<A> service;  ///< Service / platform name.
+    seal::secure_string<A> user;     ///< Username or email.
+    seal::secure_string<A> pass;     ///< Password.
 
     secure_triplet(seal::secure_string<A>&& s,
                    seal::secure_string<A>&& u,
@@ -852,16 +1144,23 @@ struct secure_triplet
 using secure_triplet_t = secure_triplet<>;
 
 /**
- * @brief RAII holder for three wide secure strings.
+ * @brief Move-only holder for three wide secure strings with tuple-like access.
  * @author Alex (https://github.com/lextpf)
+ * @ingroup Crypto
+ * @tparam A Locked allocator type (default: locked_allocator\<wchar_t\>).
+ *
+ * Members: primary (service), secondary (username), tertiary (password).
+ * Provides `operator[]`, `at()`, `first()`/`second()`/`third()`, and
+ * structured binding support via `get<I>()`.
  */
 template <class A = seal::locked_allocator<wchar_t>>
 struct secure_triplet16
 {
     using string_type = seal::basic_secure_string<wchar_t, A>;
 
-    // Keep original names
-    string_type primary, secondary, tertiary;
+    string_type primary;    ///< Service / platform name.
+    string_type secondary;  ///< Username or email.
+    string_type tertiary;   ///< Password.
 
     secure_triplet16(string_type&& s, string_type&& u, string_type&& p) noexcept
         : primary(std::move(s)), secondary(std::move(u)), tertiary(std::move(p))
@@ -873,10 +1172,10 @@ struct secure_triplet16
     secure_triplet16(const secure_triplet16&) = delete;
     secure_triplet16& operator=(const secure_triplet16&) = delete;
 
-    // Element count
+    /// @brief Return the number of fields (always 3).
     static constexpr std::size_t size() noexcept { return 3; }
 
-    // [] Access (unchecked, like std::array::operator[])
+    /// @brief Unchecked element access (0=service, 1=username, 2=password).
     string_type& operator[](std::size_t i) noexcept
     {
         assert(i < 3);
@@ -904,7 +1203,11 @@ struct secure_triplet16
         }
     }
 
-    // Bounds-checked access
+    /**
+     * @brief Bounds-checked element access.
+     * @param i Index (0-2).
+     * @throw std::out_of_range if @p i >= 3.
+     */
     string_type& at(std::size_t i)
     {
         if (i >= 3)
@@ -918,7 +1221,7 @@ struct secure_triplet16
         return (*this)[i];
     }
 
-    // First/second/third accessors
+    /// @brief Named accessors (aliases for primary/secondary/tertiary).
     string_type& first() noexcept { return primary; }
     string_type& second() noexcept { return secondary; }
     string_type& third() noexcept { return tertiary; }
@@ -927,7 +1230,7 @@ struct secure_triplet16
     const string_type& second() const noexcept { return secondary; }
     const string_type& third() const noexcept { return tertiary; }
 
-    // Tuple-like member get<I>()
+    /// @brief Tuple-like access for structured bindings (`auto& [s, u, p] = triplet`).
     template <std::size_t I>
     decltype(auto) get() & noexcept
     {

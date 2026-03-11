@@ -52,6 +52,7 @@ RowLayout {
             implicitWidth: 86
             implicitHeight: 32
             radius: Theme.radiusSmall
+            clip: true
             gradient: Gradient {
                 GradientStop { position: 0; color: encryptBtn.pressed ? Theme.iconBtnPressed : encryptBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                 GradientStop { position: 1; color: encryptBtn.pressed ? Theme.iconBtnPressed : encryptBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -103,6 +104,7 @@ RowLayout {
             implicitWidth: 86
             implicitHeight: 32
             radius: Theme.radiusSmall
+            clip: true
             gradient: Gradient {
                 GradientStop { position: 0; color: decryptBtn.pressed ? Theme.iconBtnPressed : decryptBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                 GradientStop { position: 1; color: decryptBtn.pressed ? Theme.iconBtnPressed : decryptBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }

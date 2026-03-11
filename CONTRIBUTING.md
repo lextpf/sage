@@ -107,13 +107,13 @@ if (done)
 
 ### Constructor initializer lists
 
-Leading comma, one member per line, aligned:
+Trailing comma, one member per line, aligned:
 
 ```cpp
 Game::Game()
-    : m_Window(nullptr)
-    , m_ScreenWidth(1360)
-    , m_CameraZoom(1.0f)
+    : m_Window(nullptr),
+      m_ScreenWidth(1360),
+      m_CameraZoom(1.0f)
 {
 }
 ```
@@ -408,18 +408,18 @@ bool LoadFromFile(const std::string& path);
 Use Markdown wherever possible. Doxide provides a small set of commands
 for organizing and annotating documentation:
 
-| Command | Purpose |
-|---------|---------|
-|    `@param name` | Document a parameter and its direction |
-|   `@tparam name` | Document a template parameter |
-|        `@return` | Document the return value |
-| `@pre` / `@post` | Document pre- or post-conditions |
-|    `@throw name` | Document a thrown exception |
-|           `@see` | Add "see also" references (format with Markdown links) |
+| Command          | Purpose                                  |
+|------------------|------------------------------------------|
+|    `@param name` | Document a parameter and its direction   |
+|   `@tparam name` | Document a template parameter            |
+|        `@return` | Document the return value                |
+| `@pre` / `@post` | Document pre- or post-conditions         |
+|    `@throw name` | Document a thrown exception              |
+|           `@see` | Add "see also" references                |
 |   `@anchor name` | Insert a link target for `[text](#name)` |
-|  `@ingroup name` | Add the entity to a named group |
-|             `@@` | Escape: produces a literal `@` |
-|             `@/` | Escape: produces a literal `/` |
+|  `@ingroup name` | Add the entity to a named group          |
+|             `@@` | Escape: produces a literal `@`           |
+|             `@/` | Escape: produces a literal `/`           |
 
 ### Legacy commands supported by Doxide
 

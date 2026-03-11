@@ -31,6 +31,24 @@ class FillController;
  *
  * ## :material-lock: Vault Lifecycle
  *
+ * ```mermaid
+ * ---
+ * config:
+ *   theme: dark
+ *   look: handDrawn
+ * ---
+ * stateDiagram-v2
+ *     [*] --> NoVault
+ *     NoVault --> PasswordSet : submitPassword()
+ *     PasswordSet --> VaultLoaded : loadVault()
+ *     VaultLoaded --> VaultLoaded : addAccount() / editAccount() / deleteAccount()
+ *     VaultLoaded --> VaultSaved : saveVault()
+ *     VaultSaved --> VaultLoaded : (continue editing)
+ *     VaultLoaded --> NoVault : unloadVault() [password retained]
+ *     VaultSaved --> NoVault : unloadVault() [password retained]
+ *     PasswordSet --> NoVault : cleanup()
+ * ```
+ *
  * 1. User supplies a master password via submitPassword().
  * 2. loadVault() opens a `.seal` file and populates m_Records.
  * 3. Credentials are displayed through the VaultListModel (vaultModel property).
@@ -45,10 +63,12 @@ class FillController;
  *
  * ## :material-camera: QR Capture
  *
- * requestQrCapture() launches the tess_qr library to scan a QR code
- * from a phone screen held up to the webcam. On success the captured
+ * requestQrCapture() launches OpenCV's `cv::QRCodeDetector` to scan a
+ * QR code from a phone screen held up to the webcam. On success the captured
  * text is proposed via qrTextReady() to pre-fill the password dialog;
  * the password is not committed until the user confirms.
+ *
+ * @see FillController, VaultListModel, Cryptography
  */
 class Backend : public QObject
 {
@@ -69,6 +89,8 @@ class Backend : public QObject
     Q_PROPERTY(QString fillStatusText READ fillStatusText NOTIFY fillStatusTextChanged)
     Q_PROPERTY(
         int fillCountdownSeconds READ fillCountdownSeconds NOTIFY fillCountdownSecondsChanged)
+    Q_PROPERTY(bool isAlwaysOnTop READ isAlwaysOnTop NOTIFY alwaysOnTopChanged)
+    Q_PROPERTY(bool isCompact READ isCompact NOTIFY compactChanged)
 
 public:
     /// @brief Construct the backend, creating the vault model and fill controller.
@@ -159,6 +181,7 @@ public:
      * @param service  Platform / service name (plaintext, shown in list)
      * @param username Username or email
      * @param password Password for the account
+     * @throw std::runtime_error on encryption failure.
      */
     Q_INVOKABLE void addAccount(const QString& service,
                                 const QString& username,
@@ -174,6 +197,7 @@ public:
      * @param service  New platform / service name
      * @param username New username
      * @param password New password
+     * @throw std::runtime_error on encryption failure.
      */
     Q_INVOKABLE void editAccount(int index,
                                  const QString& service,
@@ -197,7 +221,8 @@ public:
      * copies the values.
      *
      * @param index Row index of the record to decrypt
-     * @return QVariantMap with decrypted fields, or empty map on error
+     * @return QVariantMap with decrypted fields, or empty map on error.
+     * @throw std::runtime_error on decryption/authentication failure.
      */
     Q_INVOKABLE QVariantMap decryptAccountForEdit(int index);
 
@@ -257,14 +282,17 @@ public:
      * Stores the password in a secure (locked-page) buffer and
      * re-executes any pending action that was waiting for a password.
      *
-     * @param password The master password entered by the user
+     * @param password The master password entered by the user.
+     *
+     * @post The input QString is wiped (filled with null characters) after
+     *       the value has been captured into the secure buffer.
      */
-    Q_INVOKABLE void submitPassword(const QString& password);
+    Q_INVOKABLE void submitPassword(QString password);
 
     /**
      * @brief Capture text from the webcam by scanning a QR code.
      *
-     * Launches a QR capture via the tess_qr library.
+     * Launches a QR capture via OpenCV's `cv::QRCodeDetector`.
      * Emits qrCaptureFinished when complete.
      */
     Q_INVOKABLE void requestQrCapture();
@@ -288,7 +316,27 @@ public:
      */
     Q_INVOKABLE void cancelFill();
 
+    /// @brief Apply DWM dark or light window theme and update the custom title bar.
+    /// @param dark `true` for dark theme, `false` for light.
     Q_INVOKABLE void updateWindowTheme(bool dark);
+
+    /// @brief Initiate a native window drag via `startSystemMove()`.
+    Q_INVOKABLE void startWindowDrag();
+
+    /// @brief Toggle always-on-top (HWND_TOPMOST / HWND_NOTOPMOST).
+    Q_INVOKABLE void toggleAlwaysOnTop();
+
+    /// @brief Wipe the master password without unloading the vault.
+    Q_INVOKABLE void lockVault();
+
+    /// @brief Toggle compact mode (shrinks window to a minimal strip).
+    Q_INVOKABLE void toggleCompact();
+
+    /// @brief Check whether the window is pinned above other windows.
+    bool isAlwaysOnTop() const;
+
+    /// @brief Check whether the window is in compact (minimal strip) mode.
+    bool isCompact() const;
 
 signals:
     void vaultLoadedChanged();    ///< Vault open/close state changed.
@@ -334,9 +382,15 @@ signals:
     /// @param message Error message to display in the password dialog.
     void passwordRetryRequired(const QString& message);
 
+    /// @brief Re-show the add-account dialog after password was entered.
+    /// @param service The service name that was originally submitted.
+    void addAccountRetryRequired(const QString& service);
+
     void fillArmedChanged();             ///< Auto-fill armed state toggled.
     void fillStatusTextChanged();        ///< Auto-fill status message updated.
     void fillCountdownSecondsChanged();  ///< Auto-fill countdown tick.
+    void alwaysOnTopChanged();           ///< Always-on-top toggled.
+    void compactChanged();               ///< Compact mode toggled.
 
 private:
     /**
@@ -366,6 +420,17 @@ private:
      * @param text New status message
      */
     void setStatus(const QString& text);
+
+    /**
+     * @brief Start a 3-second countdown, then execute a typing action.
+     *
+     * Shared implementation for typeLogin() and typePassword().
+     *
+     * @param index   Record index to type.
+     * @param action  Callable invoked at countdown zero (DPAPI unprotected).
+     * @param label   Status label (e.g. "Login" or "Password").
+     */
+    void scheduleTypingAction(int index, std::function<void()> action, const QString& label);
 
     /**
      * @brief Rebuild the VaultListModel from the current record list.
@@ -428,6 +493,10 @@ private:
     QString m_SearchFilter;                          ///< Active search/filter string.
     QString m_CountdownText;                         ///< Countdown display for timed ops.
     bool m_Busy = false;                             ///< Background operation in progress.
+    bool m_AlwaysOnTop = false;                      ///< Window pinned above others.
+    bool m_Compact = false;                          ///< Compact mode active.
+    int m_NormalWidth = 0;                           ///< Saved width before compact.
+    int m_NormalHeight = 0;                          ///< Saved height before compact.
 };
 
 }  // namespace seal

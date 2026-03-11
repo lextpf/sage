@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 
 // Top header bar. Layout: [fingerprint icon] [title] [theme toggle] ... [Load] [Save] [Unload]
 //
@@ -10,15 +11,39 @@ import QtQuick.Layouts
 // All three vault buttons use the neutral iconBtn palette (same hue, different
 // states) because they're utilities rather than primary actions like Add/Edit/Delete.
 
-RowLayout {
+Item {
     id: root
-    spacing: Theme.spacingMedium
+    implicitHeight: headerRow.implicitHeight
+    implicitWidth: headerRow.implicitWidth
 
     signal loadClicked()
     signal saveClicked()
     signal unloadClicked()
 
     property bool vaultLoaded: false
+
+    // Title bar drag area: wraps the header row so unhandled clicks
+    // (on empty space between buttons) bubble up here and start a
+    // native window drag. Interactive children consume their own events.
+    MouseArea {
+        id: dragArea
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton
+        onPressed: function(mouse) {
+            Backend.startWindowDrag()
+        }
+        onDoubleClicked: function(mouse) {
+            var w = root.Window.window
+            if (w.visibility === Window.Maximized)
+                w.showNormal()
+            else
+                w.showMaximized()
+        }
+
+    RowLayout {
+        id: headerRow
+        anchors.fill: parent
+        spacing: Theme.spacingMedium
 
     // App identity icon. Clicking triggers a rainbow color cycle easter egg:
     // the icon transitions through seven hues then returns to the theme accent.
@@ -145,6 +170,7 @@ RowLayout {
             implicitWidth: 86
             implicitHeight: 32
             radius: Theme.radiusSmall
+            clip: true
             gradient: Gradient {
                 GradientStop { position: 0; color: loadBtn.pressed ? Theme.iconBtnPressed : loadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                 GradientStop { position: 1; color: loadBtn.pressed ? Theme.iconBtnPressed : loadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -197,6 +223,7 @@ RowLayout {
             implicitWidth: 86
             implicitHeight: 32
             radius: Theme.radiusSmall
+            clip: true
             gradient: Gradient {
                 GradientStop { position: 0; color: !saveBtn.enabled ? Theme.btnDisabledTop : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                 GradientStop { position: 1; color: !saveBtn.enabled ? Theme.btnDisabledBot : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -249,6 +276,7 @@ RowLayout {
             implicitWidth: 96
             implicitHeight: 32
             radius: Theme.radiusSmall
+            clip: true
             gradient: Gradient {
                 GradientStop { position: 0; color: !unloadBtn.enabled ? Theme.btnDisabledTop : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                 GradientStop { position: 1; color: !unloadBtn.enabled ? Theme.btnDisabledBot : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -261,4 +289,6 @@ RowLayout {
         }
         onPressed: unloadRipple.trigger(unloadHover.point.position.x, unloadHover.point.position.y)
     }
-}
+    }  // RowLayout
+    }  // MouseArea
+}  // Item root

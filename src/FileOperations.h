@@ -74,7 +74,7 @@ public:
      * @return `true` on success, `false` if the file cannot be opened/written.
      */
     template <class SecurePwd>
-    static bool encryptFileInPlace(const char* path, const SecurePwd& pwd);
+    static bool encryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
      * @brief Decrypt a file in place, overwriting the encrypted contents.
@@ -89,7 +89,7 @@ public:
      * @return `true` on success, `false` on I/O or authentication error.
      */
     template <class SecurePwd>
-    static bool decryptFileInPlace(const char* path, const SecurePwd& pwd);
+    static bool decryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
      * @brief Encrypt a UTF-8 string and return the result as a hex string.
@@ -112,14 +112,17 @@ public:
      * @param pwd    Master password for key derivation.
      * @return Decrypted plaintext in a secure (locked-page) string.
      *
-     * @throws std::runtime_error on invalid hex or authentication failure.
+     * @throw std::runtime_error on invalid hex or authentication failure.
      */
     template <class SecurePwd>
     [[nodiscard]] static seal::secure_string<seal::locked_allocator<char>> decryptLine(
         const std::string& rawHex, const SecurePwd& pwd);
 
     /**
-     * @brief Compute serialized length of a UTF-16 triple rendered as `s:u:p`.
+     * @brief Compute the serialized wide-character length of a triple as `s:u:p`.
+     * @tparam A Locked allocator type for `wchar_t`.
+     * @param t The triple to measure.
+     * @return Total wide-character count including the two `:` separators.
      */
     template <class A>
     static size_t tripleLen(const seal::secure_triplet16<A>& t)
@@ -129,6 +132,9 @@ public:
 
     /**
      * @brief Convert a UTF-16 triple to a single UTF-8 line `service:username:password`.
+     * @param t The secure triple to serialize.
+     * @return UTF-8 encoded string in regular heap memory.
+     * @warning The returned string is **not** in locked memory.
      */
     static std::string tripleToUtf8(const seal::secure_triplet16_t& t);
 
@@ -139,8 +145,8 @@ public:
      * enforces exactly two colons per item.
      *
      * @tparam A Locked allocator for `wchar_t`.
-     * @param plain Narrow plain text input (ASCII only; bytes are widened
-     *              directly to `wchar_t` without UTF-8 decoding).
+     * @param plain Narrow plain text input (UTF-8; converted to UTF-16
+     *              via `MultiByteToWideChar`).
      * @param out   Destination vector of secure UTF-16 triplets.
      * @return `true` on success (non-empty result with only well-formed items).
      */
@@ -153,7 +159,8 @@ public:
      * Walks the directory with `FindFirstFileA`, skipping `.exe` and the
      * `seal` binary itself. Each file is encrypted or decrypted based on
      * its `.seal` extension and renamed in place after successful I/O.
-     * Subdirectories are processed in parallel via `std::async`.
+     * Subdirectories are processed in parallel via `std::async`
+     * (concurrency is bounded by the thread pool to `std::thread::hardware_concurrency()`).
      *
      * @tparam SecurePwd Secure password container.
      * @param dir      Root directory path.

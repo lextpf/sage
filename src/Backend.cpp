@@ -4,8 +4,11 @@
 #include "Clipboard.h"
 #include "FillController.h"
 #include "Logging.h"
+#include "QrCapture.h"
+#include "ScopedDpapiUnprotect.h"
 #include "VaultModel.h"
 
+#include <QtCore/QAbstractNativeEventFilter>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -20,12 +23,144 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <windows.h>
+#include <windowsx.h>
 
 #include <functional>
 #include <memory>
 #include <string>
 
-#include "QrCapture.h"
+// Concrete alias used throughout this file.
+using ScopedDpapiUnprotect =
+    seal::ScopedDpapiUnprotect<seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>>;
+
+namespace
+{
+
+// Native event filter that extends the client area into the title bar,
+// keeps the DWM caption buttons (close/min/max), and handles resize edges.
+//
+// This filter intercepts Win32 messages before Qt sees them, allowing us to
+// implement a fully custom title bar (drawn in QML) while still supporting
+// native window chrome behaviors like resizing, snapping, and DWM shadows.
+class TitleBarFilter : public QAbstractNativeEventFilter
+{
+public:
+    HWND m_hwnd = nullptr;
+
+    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override
+    {
+        if (eventType != "windows_generic_MSG")
+            return false;
+        auto* msg = static_cast<MSG*>(message);
+        if (!m_hwnd || msg->hwnd != m_hwnd)
+            return false;
+
+        switch (msg->message)
+        {
+            case WM_NCCALCSIZE:
+            {
+                if (msg->wParam == TRUE)
+                {
+                    // Returning 0 makes the entire window the client area,
+                    // removing the native title bar. For maximized windows,
+                    // constrain to the monitor work area so the taskbar stays visible.
+                    if (IsZoomed(msg->hwnd))
+                    {
+                        auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
+                        HMONITOR mon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+                        MONITORINFO mi{};
+                        mi.cbSize = sizeof(mi);
+                        if (GetMonitorInfoW(mon, &mi))
+                            params->rgrc[0] = mi.rcWork;
+                    }
+                    *result = 0;
+                    return true;
+                }
+                break;
+            }
+            case WM_NCPAINT:
+            {
+                // Suppress all non-client painting to eliminate the 1px
+                // DWM border. The client area covers the full window so
+                // there is nothing legitimate to paint in the NC region.
+                *result = 0;
+                return true;
+            }
+            case WM_NCHITTEST:
+            {
+                // Custom title bar: all caption buttons are QML-driven,
+                // so we only handle resize borders here.
+                POINT pt;
+                pt.x = GET_X_LPARAM(msg->lParam);
+                pt.y = GET_Y_LPARAM(msg->lParam);
+                RECT rc;
+                GetWindowRect(msg->hwnd, &rc);
+
+                // Resize borders (only when not maximized).
+                if (!IsZoomed(msg->hwnd))
+                {
+                    // SM_CXPADDEDBORDERWIDTH (index 92) adds the extra padding
+                    // Windows uses around resizable frames. We use the raw
+                    // integer 92 because some older SDK headers don't define the
+                    // SM_CXPADDEDBORDERWIDTH constant.
+                    int frame = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(92);
+                    // Walk the edges: check top strip first (corners have
+                    // priority), then bottom strip, then left/right. The
+                    // returned HT* codes tell Windows which resize cursor to
+                    // show and which edge the user is dragging.
+                    if (pt.y < rc.top + frame)
+                    {
+                        if (pt.x < rc.left + frame)
+                        {
+                            *result = HTTOPLEFT;
+                            return true;
+                        }
+                        if (pt.x >= rc.right - frame)
+                        {
+                            *result = HTTOPRIGHT;
+                            return true;
+                        }
+                        *result = HTTOP;
+                        return true;
+                    }
+                    if (pt.y >= rc.bottom - frame)
+                    {
+                        if (pt.x < rc.left + frame)
+                        {
+                            *result = HTBOTTOMLEFT;
+                            return true;
+                        }
+                        if (pt.x >= rc.right - frame)
+                        {
+                            *result = HTBOTTOMRIGHT;
+                            return true;
+                        }
+                        *result = HTBOTTOM;
+                        return true;
+                    }
+                    if (pt.x < rc.left + frame)
+                    {
+                        *result = HTLEFT;
+                        return true;
+                    }
+                    if (pt.x >= rc.right - frame)
+                    {
+                        *result = HTRIGHT;
+                        return true;
+                    }
+                }
+
+                // Everything else is client area; QML handles window dragging
+                // via startSystemMove() from the header bar.
+                *result = HTCLIENT;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+}  // anonymous namespace
 
 namespace seal
 {
@@ -38,6 +173,10 @@ basic_secure_string<wchar_t, locked_allocator<wchar_t>> Backend::qstringToSecure
         return result;
 
     // Intermediate std::wstring is unavoidable; Qt has no direct-to-locked-page API.
+    // toStdWString() allocates a normal-heap wstring that we can't control,
+    // so we copy it into locked (non-pageable) memory immediately, then
+    // scrub the heap copy to minimize the window where plaintext sits in
+    // swappable RAM.
     std::wstring wstr = qstr.toStdWString();
     result.s.assign(wstr.begin(), wstr.end());
     SecureZeroMemory(wstr.data(), wstr.size() * sizeof(wchar_t));
@@ -45,9 +184,7 @@ basic_secure_string<wchar_t, locked_allocator<wchar_t>> Backend::qstringToSecure
 }
 
 Backend::Backend(QObject* parent)
-    : QObject(parent),
-      m_Model(std::make_unique<VaultListModel>(this).release()),
-      m_FillController(std::make_unique<FillController>(this).release())
+    : QObject(parent), m_Model(new VaultListModel(this)), m_FillController(new FillController(this))
 {
     m_Model->setRecords(&m_Records);
 
@@ -204,10 +341,15 @@ bool Backend::ensurePassword()
     return false;
 }
 
-void Backend::submitPassword(const QString& password)
+void Backend::submitPassword(QString password)
 {
     auto wide = qstringToSecureWide(password);
+    // Wipe the input QString to reduce plaintext residency in pageable memory.
+    password.fill(QChar(0));
     m_Password = std::move(wide);
+    // Wrap the password in a DPAPI guard: when "protected", the memory is
+    // encrypted in-place by the OS, making it unreadable even if the process
+    // memory is dumped. unprotect()/reprotect() bracket every use.
     m_DPAPIGuard = seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>(&m_Password);
     m_PasswordSet = true;
     qCInfo(logBackend) << "password set via manual entry";
@@ -215,6 +357,10 @@ void Backend::submitPassword(const QString& password)
     emit passwordSetChanged();
 
     // Resume the action that was waiting for a password (e.g. loadVault, addAccount).
+    // The pending-action pattern: callers stash a lambda in m_PendingAction
+    // before triggering the password dialog. Once the user submits, we
+    // move-and-clear the lambda to avoid re-entrancy if the action itself
+    // queues another pending action.
     if (m_PendingAction)
     {
         auto action = std::move(m_PendingAction);
@@ -228,37 +374,64 @@ void Backend::requestQrCapture()
     _putenv_s("TESS_CAMERA_WARMUP_MS", "250");
     _putenv_s("TESS_ENTER_CAPTURE_FRAMES", "3");
 
-    // Let the QR scanner window come to the foreground over our window.
+    // AllowSetForegroundWindow(ASFW_ANY) grants any process permission to
+    // steal foreground focus. Without this, the QR scanner's OpenCV window
+    // would open behind our window because Windows blocks background
+    // processes from taking the foreground.
     AllowSetForegroundWindow(ASFW_ANY);
 
-    qCInfo(logBackend) << "starting webcam QR capture";
-    seal::secure_string<> qrResult = seal::captureQrFromWebcam();
-    qCInfo(logBackend) << "webcam QR returned len=" << qrResult.size();
+    qCInfo(logBackend) << "starting webcam QR capture (worker thread)";
 
-    if (qrResult.empty())
-    {
-        qCWarning(logBackend) << "password NOT set (QR capture failed or empty)";
-        setStatus("QR capture failed or cancelled");
-        emit qrCaptureFinished(false);
-        return;
-    }
+    // Run the blocking OpenCV capture on a worker thread so the Qt event
+    // loop stays responsive. captureQrFromWebcam() can block for up to
+    // 60 seconds (capture timeout); doing that on the GUI thread would
+    // freeze the entire UI.
+    auto* thread = QThread::create(
+        [this]()
+        {
+            seal::secure_string<> qrResult = seal::captureQrFromWebcam();
 
-    // Convert the UTF-8 QR result to a QString for pre-filling the
-    // password dialog. Don't set m_Password yet - let the user confirm.
-    QString captured = QString::fromUtf8(qrResult.data(), (int)qrResult.size());
-    // qrResult auto-wipes on scope exit
+            // Deliver the result back to the GUI thread via a queued invocation
+            // so all signal emissions happen on the correct thread.
+            QMetaObject::invokeMethod(
+                this,
+                [this, result = std::move(qrResult)]() mutable
+                {
+                    qCInfo(logBackend) << "webcam QR returned len=" << result.size();
 
-    qCInfo(logBackend) << "QR captured" << captured.size() << "chars, awaiting confirmation";
-    setStatus("QR captured - confirm password");
-    emit qrCaptureFinished(true);
+                    if (result.empty())
+                    {
+                        qCWarning(logBackend) << "password NOT set (QR capture failed or empty)";
+                        setStatus("QR capture failed or cancelled");
+                        emit qrCaptureFinished(false);
+                        return;
+                    }
 
-    // Signal the QML layer to re-open the password dialog with the
-    // captured text pre-filled. The user can review and press OK to confirm,
-    // which flows through the normal submitPassword() path.
-    emit qrTextReady(captured);
+                    // Convert the UTF-8 QR result to a QString for pre-filling the
+                    // password dialog. Don't set m_Password yet - let the user confirm.
+                    QString captured = QString::fromUtf8(result.data(), (int)result.size());
+                    // result auto-wipes on scope exit
 
-    // Wipe the local QString copy.
-    captured.fill(QChar(0));
+                    qCInfo(logBackend)
+                        << "QR captured" << captured.size() << "chars, awaiting confirmation";
+                    setStatus("QR captured - confirm password");
+                    emit qrCaptureFinished(true);
+
+                    // Signal the QML layer to re-open the password dialog with the
+                    // captured text pre-filled. The user can review and press OK to
+                    // confirm, which flows through the normal submitPassword() path.
+                    emit qrTextReady(captured);
+
+                    // Wipe the local QString copy so the raw QR text doesn't linger
+                    // on the heap after the signal delivers it to QML.
+                    captured.fill(QChar(0));
+                },
+                Qt::QueuedConnection);
+        });
+
+    // Clean up the thread object after it finishes.
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 void Backend::setStatus(const QString& text)
@@ -297,6 +470,8 @@ QString Backend::openFileDialog(const QString& title, const QString& filter)
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = wTitle.c_str();
+    // OFN_NOCHANGEDIR prevents the dialog from changing the process CWD,
+    // which would break relative-path vault auto-discovery.
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn))
@@ -368,9 +543,8 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
                        << "autoLoad=" << isAutoLoad;
     try
     {
-        m_DPAPIGuard.unprotect();
+        ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
         m_Records = seal::loadVaultIndex(filePath, m_Password);
-        m_DPAPIGuard.reprotect();
         m_CurrentVaultPath = filePath;
         qCInfo(logBackend) << "vault loaded:" << m_Records.size() << "record(s)";
         refreshModel();
@@ -385,9 +559,14 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
     }
     catch (const std::runtime_error& e)
     {
-        m_DPAPIGuard.reprotect();
         if (std::string(e.what()) == "Wrong password")
         {
+            // Wrong-password retry flow:
+            // 1. Destroy the DPAPI guard and wipe the bad password.
+            // 2. Clear passwordSet so the UI knows no valid key is loaded.
+            // 3. Stash a lambda that re-attempts this same load once the
+            //    user enters a new password (the pending-action pattern).
+            // 4. Signal QML to re-show the password dialog with an error hint.
             qCWarning(logBackend) << "wrong password for vault";
             m_DPAPIGuard = {};
             seal::Cryptography::cleanseString(m_Password);
@@ -448,9 +627,8 @@ void Backend::saveVault()
 
     qCInfo(logBackend) << "saveVault:" << QFileInfo(fileName).fileName()
                        << "records=" << m_Records.size();
-    m_DPAPIGuard.unprotect();
+    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     bool saveOk = seal::saveVaultV2(fileName, m_Records, m_Password);
-    m_DPAPIGuard.reprotect();
     if (saveOk)
     {
         m_CurrentVaultPath = fileName;
@@ -458,8 +636,8 @@ void Backend::saveVault()
         // Clear dirty flags and purge soft-deleted records now that
         // they've been committed to disk.
         for (auto& rec : m_Records)
-            rec.m_Dirty = false;
-        std::erase_if(m_Records, [](const seal::VaultRecord& r) { return r.m_Deleted; });
+            rec.dirty = false;
+        std::erase_if(m_Records, [](const seal::VaultRecord& r) { return r.deleted; });
 
         refreshModel();
         qCInfo(logBackend) << "vault saved:" << m_Records.size() << "record(s)";
@@ -507,10 +685,9 @@ void Backend::addAccount(const QString& service, const QString& username, const 
     auto secUsername = qstringToSecureWide(username);
     auto secPassword = qstringToSecureWide(password);
 
-    m_DPAPIGuard.unprotect();
+    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     seal::VaultRecord newRecord = seal::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
-    m_DPAPIGuard.reprotect();
 
     seal::Cryptography::cleanseString(secUsername, secPassword);
 
@@ -536,14 +713,21 @@ void Backend::editAccount(int index,
         return;
     }
 
+    if (!m_PasswordSet)
+    {
+        m_PendingAction = [this, index, service, username, password]()
+        { editAccount(index, service, username, password); };
+        ensurePassword();
+        return;
+    }
+
     auto secUsername = qstringToSecureWide(username);
     auto secPassword = qstringToSecureWide(password);
 
     // Replace the record entirely - re-encrypt with a fresh salt/IV.
-    m_DPAPIGuard.unprotect();
+    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     m_Records[index] = seal::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
-    m_DPAPIGuard.reprotect();
 
     seal::Cryptography::cleanseString(secUsername, secPassword);
 
@@ -559,8 +743,8 @@ void Backend::deleteAccount(int index)
 
     // Soft-delete: flag the record so it's excluded from the model
     // immediately, but keep it around until saveVault() commits to disk.
-    m_Records[index].m_Deleted = true;
-    m_Records[index].m_Dirty = true;
+    m_Records[index].deleted = true;
+    m_Records[index].dirty = true;
     qCInfo(logBackend) << "deleteAccount: index=" << index << "(soft-delete)";
     refreshModel();
     setStatus("Account deleted");
@@ -570,7 +754,7 @@ void Backend::deleteAccount(int index)
     bool anyVisible = false;
     for (const auto& rec : m_Records)
     {
-        if (!rec.m_Deleted)
+        if (!rec.deleted)
         {
             anyVisible = true;
             break;
@@ -599,22 +783,29 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             QVariantMap data;
             try
             {
-                m_DPAPIGuard.unprotect();
+                if (index < 0 || index >= static_cast<int>(m_Records.size()))
+                {
+                    qCWarning(logBackend)
+                        << "decryptAccountForEdit (deferred): record no longer exists";
+                    emit errorOccurred("Error", "Selected account no longer exists");
+                    return;
+                }
+
+                const seal::VaultRecord& record = m_Records[index];
+                ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
                 seal::DecryptedCredential cred =
-                    seal::decryptCredentialOnDemand(m_Records[index], m_Password);
-                m_DPAPIGuard.reprotect();
-                data["service"] = QString::fromUtf8(m_Records[index].m_Platform.c_str());
+                    seal::decryptCredentialOnDemand(record, m_Password);
+                data["service"] = QString::fromUtf8(record.platform.c_str());
                 data["username"] =
-                    QString::fromWCharArray(cred.m_Username.data(), (int)cred.m_Username.size());
+                    QString::fromWCharArray(cred.username.data(), (int)cred.username.size());
                 data["password"] =
-                    QString::fromWCharArray(cred.m_Password.data(), (int)cred.m_Password.size());
+                    QString::fromWCharArray(cred.password.data(), (int)cred.password.size());
                 data["editIndex"] = index;
                 cred.cleanse();
                 emit editAccountReady(data);
             }
             catch (const std::exception& e)
             {
-                m_DPAPIGuard.reprotect();
                 qCWarning(logBackend)
                     << "decryptAccountForEdit (deferred): decrypt failed:" << e.what();
                 emit errorOccurred("Error",
@@ -628,23 +819,21 @@ QVariantMap Backend::decryptAccountForEdit(int index)
     try
     {
         // On-demand decrypt - credential blob stays encrypted at rest.
-        m_DPAPIGuard.unprotect();
-        seal::DecryptedCredential cred =
-            seal::decryptCredentialOnDemand(m_Records[index], m_Password);
-        m_DPAPIGuard.reprotect();
+        const seal::VaultRecord& record = m_Records[index];
+        ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
+        seal::DecryptedCredential cred = seal::decryptCredentialOnDemand(record, m_Password);
 
-        result["service"] = QString::fromUtf8(m_Records[index].m_Platform.c_str());
+        result["service"] = QString::fromUtf8(record.platform.c_str());
         result["username"] =
-            QString::fromWCharArray(cred.m_Username.data(), (int)cred.m_Username.size());
+            QString::fromWCharArray(cred.username.data(), (int)cred.username.size());
         result["password"] =
-            QString::fromWCharArray(cred.m_Password.data(), (int)cred.m_Password.size());
+            QString::fromWCharArray(cred.password.data(), (int)cred.password.size());
 
         // Wipe the plaintext as soon as we've copied it into QVariants.
         cred.cleanse();
     }
     catch (const std::exception& e)
     {
-        m_DPAPIGuard.reprotect();
         qCWarning(logBackend) << "decryptAccountForEdit: decrypt failed:" << e.what();
         emit errorOccurred("Error", QString("Failed to decrypt credential: %1").arg(e.what()));
     }
@@ -655,11 +844,15 @@ QVariantMap Backend::decryptAccountForEdit(int index)
 // The 200ms pause between username and Tab gives the target app time to
 // process the input before we advance to the next field.
 static void doTypeLogin(
-    Backend* backend,
     const std::vector<seal::VaultRecord>& records,
     int index,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw)
 {
+    if (index < 0 || index >= static_cast<int>(records.size()))
+    {
+        return;
+    }
+
     seal::DecryptedCredential cred;
     try
     {
@@ -670,7 +863,7 @@ static void doTypeLogin(
         return;
     }
 
-    bool success1 = seal::typeSecret(cred.m_Username.data(), (int)cred.m_Username.size(), 0);
+    bool success1 = seal::typeSecret(cred.username.data(), (int)cred.username.size(), 0);
 
     if (!success1)
     {
@@ -682,7 +875,9 @@ static void doTypeLogin(
     // before we send Tab to advance to the password field.
     QThread::msleep(200);
 
-    // Synthesize a Tab keypress to move focus to the password field.
+    // Synthesize a Tab key-down + key-up via SendInput to move focus to
+    // the password field. SendInput injects hardware-level events into the
+    // input stream, which works even when the target app ignores WM_CHAR.
     INPUT tabInput[2] = {};
     tabInput[0].type = INPUT_KEYBOARD;
     tabInput[0].ki.wVk = VK_TAB;
@@ -692,7 +887,7 @@ static void doTypeLogin(
     SendInput(2, tabInput, sizeof(INPUT));
     QThread::msleep(100);
 
-    seal::typeSecret(cred.m_Password.data(), (int)cred.m_Password.size(), 0);
+    seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
 }
 
@@ -702,6 +897,11 @@ static void doTypePassword(
     int index,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw)
 {
+    if (index < 0 || index >= static_cast<int>(records.size()))
+    {
+        return;
+    }
+
     seal::DecryptedCredential cred;
     try
     {
@@ -712,7 +912,7 @@ static void doTypePassword(
         return;
     }
 
-    seal::typeSecret(cred.m_Password.data(), (int)cred.m_Password.size(), 0);
+    seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
 }
 
@@ -729,52 +929,8 @@ void Backend::typeLogin(int index)
     if (m_Busy || m_FillController->isArmed())
         return;
 
-    m_Busy = true;
-    emit busyChanged();
-
-    // 3-second countdown gives the user time to focus the target field
-    // in the external application before keystrokes start arriving.
-    int remaining = 3;
-    m_CountdownText = QString("Typing in %1...").arg(remaining);
-    emit countdownTextChanged();
-
-    auto* timer = std::make_unique<QTimer>(this).release();
-    timer->setInterval(1000);
-
-    connect(timer,
-            &QTimer::timeout,
-            this,
-            [this, timer, index, remaining]() mutable
-            {
-                remaining--;
-                if (remaining > 0)
-                {
-                    m_CountdownText = QString("Typing in %1...").arg(remaining);
-                    emit countdownTextChanged();
-                }
-                else
-                {
-                    timer->stop();
-                    timer->deleteLater();
-
-                    m_CountdownText = "Typing...";
-                    emit countdownTextChanged();
-
-                    QString service = QString::fromUtf8(m_Records[index].m_Platform.c_str());
-
-                    m_DPAPIGuard.unprotect();
-                    doTypeLogin(this, m_Records, index, m_Password);
-                    m_DPAPIGuard.reprotect();
-
-                    m_CountdownText.clear();
-                    emit countdownTextChanged();
-                    m_Busy = false;
-                    emit busyChanged();
-                    setStatus(QString("Login typed for '%1'").arg(service));
-                }
-            });
-
-    timer->start();
+    scheduleTypingAction(
+        index, [this, index]() { doTypeLogin(m_Records, index, m_Password); }, "Login");
 }
 
 void Backend::typePassword(int index)
@@ -790,20 +946,28 @@ void Backend::typePassword(int index)
     if (m_Busy || m_FillController->isArmed())
         return;
 
+    scheduleTypingAction(
+        index, [this, index]() { doTypePassword(m_Records, index, m_Password); }, "Password");
+}
+
+void Backend::scheduleTypingAction(int index, std::function<void()> action, const QString& label)
+{
     m_Busy = true;
     emit busyChanged();
 
+    // 3-second countdown gives the user time to focus the target field
+    // in the external application before keystrokes start arriving.
     int remaining = 3;
     m_CountdownText = QString("Typing in %1...").arg(remaining);
     emit countdownTextChanged();
 
-    auto* timer = std::make_unique<QTimer>(this).release();
+    auto* timer = new QTimer(this);
     timer->setInterval(1000);
 
     connect(timer,
             &QTimer::timeout,
             this,
-            [this, timer, index, remaining]() mutable
+            [this, timer, index, action = std::move(action), label, remaining]() mutable
             {
                 remaining--;
                 if (remaining > 0)
@@ -816,20 +980,28 @@ void Backend::typePassword(int index)
                     timer->stop();
                     timer->deleteLater();
 
+                    if (index < 0 || index >= (int)m_Records.size())
+                    {
+                        m_CountdownText.clear();
+                        emit countdownTextChanged();
+                        m_Busy = false;
+                        emit busyChanged();
+                        return;
+                    }
+
                     m_CountdownText = "Typing...";
                     emit countdownTextChanged();
 
-                    QString service = QString::fromUtf8(m_Records[index].m_Platform.c_str());
+                    QString service = QString::fromUtf8(m_Records[index].platform.c_str());
 
-                    m_DPAPIGuard.unprotect();
-                    doTypePassword(m_Records, index, m_Password);
-                    m_DPAPIGuard.reprotect();
+                    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
+                    action();
 
                     m_CountdownText.clear();
                     emit countdownTextChanged();
                     m_Busy = false;
                     emit busyChanged();
-                    setStatus(QString("Password typed for '%1'").arg(service));
+                    setStatus(QString("%1 typed for '%2'").arg(label, service));
                 }
             });
 
@@ -849,9 +1021,8 @@ void Backend::encryptDirectory()
     if (dirPath.isEmpty())
         return;
 
-    m_DPAPIGuard.unprotect();
+    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     int count = seal::encryptDirectory(dirPath, m_Password);
-    m_DPAPIGuard.reprotect();
     qCInfo(logBackend) << "encryptDirectory: encrypted" << count << "file(s)";
     setStatus(QString("Encrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Encrypted %1 file(s) in directory").arg(count));
@@ -870,9 +1041,8 @@ void Backend::decryptDirectory()
     if (dirPath.isEmpty())
         return;
 
-    m_DPAPIGuard.unprotect();
+    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     int count = seal::decryptDirectory(dirPath, m_Password);
-    m_DPAPIGuard.reprotect();
     qCInfo(logBackend) << "decryptDirectory: decrypted" << count << "file(s)";
     setStatus(QString("Decrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Decrypted %1 file(s) in directory").arg(count));
@@ -936,7 +1106,14 @@ void Backend::armFill(int index)
 
     qCInfo(logBackend) << "armFill: index=" << index;
     m_DPAPIGuard.unprotect();
-    m_FillController->arm(index, m_Records, m_Password);
+    const bool armed = m_FillController->arm(index, m_Records, m_Password);
+    if (!armed)
+    {
+        // If hook install failed, don't apply "armed" UI state/minimize behavior.
+        // fillError may already have reprotected, but this is harmless if unchanged.
+        m_DPAPIGuard.reprotect();
+        return;
+    }
     setStatus("Fill armed - Ctrl+Click target field");
 
     // Minimize so the user can see and click the target application.
@@ -965,15 +1142,13 @@ void Backend::cleanup()
     {
         try
         {
-            m_DPAPIGuard.unprotect();
+            ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
             int count = seal::encryptDirectory(m_AutoEncryptDirectory, m_Password);
-            m_DPAPIGuard.reprotect();
             qCInfo(logBackend) << "cleanup: auto-encrypted" << count << "file(s)";
             setStatus(QString("Auto-encrypted %1 file(s) in directory").arg(count));
         }
         catch (const std::exception& e)
         {
-            m_DPAPIGuard.reprotect();
             qCWarning(logBackend) << "cleanup: auto-encrypt failed:" << e.what();
         }
     }
@@ -1001,33 +1176,136 @@ void Backend::updateWindowTheme(bool dark)
     if (!hwnd)
         return;
 
-    // Remove window icon from title bar
-    static bool iconRemoved = false;
-    if (!iconRemoved)
+    // One-time setup: install the native event filter that extends the client
+    // area into the title bar and handles resize-border hit testing.
+    static bool frameInstalled = false;
+    if (!frameInstalled)
     {
-        // Clear class-level icons (Qt default fallback)
+        // Remove window icon from title bar
         SetClassLongPtr(hwnd, GCLP_HICON, 0);
         SetClassLongPtr(hwnd, GCLP_HICONSM, 0);
-        // Clear instance-level icons
         SendMessage(hwnd, WM_SETICON, ICON_SMALL, 0);
         SendMessage(hwnd, WM_SETICON, ICON_BIG, 0);
-        // Add dialog frame style to suppress icon area
-        LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle | WS_EX_DLGMODALFRAME);
+
+        // Install native event filter for custom title bar
+        auto* filter = new TitleBarFilter();
+        filter->m_hwnd = hwnd;
+        QCoreApplication::instance()->installNativeEventFilter(filter);
+
+        // Extend the DWM frame into the client area so the system draws its
+        // shadow and caption buttons over our content.
+        // {-1,-1,-1,-1} means "extend to the entire window" - DWM will
+        // render its glass/shadow over the full client surface.
+        MARGINS margins{-1, -1, -1, -1};
+        DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+        // Request rounded window corners from the DWM compositor.
+        static constexpr DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+        DWORD cornerPref = 2;  // DWMWCP_ROUND
+        DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
+
+        // Force a frame recalculation so WM_NCCALCSIZE runs with our handler.
         SetWindowPos(
             hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-        iconRemoved = true;
+
+        frameInstalled = true;
     }
 
-    BOOL darkMode = dark ? TRUE : FALSE;
-    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+    // These DWM attribute IDs were introduced in Windows 10/11 but aren't
+    // always in the SDK headers. Defining them as constants lets us build
+    // with older SDKs while still using the newer personalization APIs.
+    static constexpr DWORD DWMWA_USE_IMMERSIVE_DARK_MODE = 20;  // Win10 1903+
+    static constexpr DWORD DWMWA_CAPTION_COLOR = 34;            // Win11 22000+
+    static constexpr DWORD DWMWA_BORDER_COLOR = 35;             // Win11 22000+
+    static constexpr DWORD DWMWA_TEXT_COLOR = 36;               // Win11 22000+
 
+    BOOL darkMode = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+
+    // Match border color to bgDeep so the 1px DWM frame blends invisibly.
     COLORREF captionColor = dark ? RGB(18, 24, 38) : RGB(245, 239, 230);
-    DwmSetWindowAttribute(hwnd, 34, &captionColor, sizeof(captionColor));
-    DwmSetWindowAttribute(hwnd, 35, &captionColor, sizeof(captionColor));
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &captionColor, sizeof(captionColor));
+    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
 
     COLORREF textColor = dark ? RGB(240, 242, 248) : RGB(44, 24, 16);
-    DwmSetWindowAttribute(hwnd, 36, &textColor, sizeof(textColor));
+    DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &textColor, sizeof(textColor));
+}
+
+void Backend::startWindowDrag()
+{
+    auto windows = QGuiApplication::topLevelWindows();
+    if (!windows.isEmpty())
+        windows.first()->startSystemMove();
+}
+
+bool Backend::isAlwaysOnTop() const
+{
+    return m_AlwaysOnTop;
+}
+
+void Backend::toggleAlwaysOnTop()
+{
+    auto windows = QGuiApplication::topLevelWindows();
+    if (windows.isEmpty())
+        return;
+
+    HWND hwnd = (HWND)windows.first()->winId();
+    m_AlwaysOnTop = !m_AlwaysOnTop;
+    SetWindowPos(
+        hwnd, m_AlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    qCInfo(logBackend) << "alwaysOnTop:" << m_AlwaysOnTop;
+    emit alwaysOnTopChanged();
+}
+
+void Backend::lockVault()
+{
+    if (!m_PasswordSet)
+        return;
+
+    qCInfo(logBackend) << "lockVault: wiping master password";
+    m_FillController->cancel();
+    m_DPAPIGuard = {};
+    seal::Cryptography::cleanseString(m_Password);
+    m_PasswordSet = false;
+    emit passwordSetChanged();
+    setStatus("Vault locked - password required for next action");
+}
+
+bool Backend::isCompact() const
+{
+    return m_Compact;
+}
+
+void Backend::toggleCompact()
+{
+    auto windows = QGuiApplication::topLevelWindows();
+    if (windows.isEmpty())
+        return;
+
+    QWindow* win = windows.first();
+    m_Compact = !m_Compact;
+
+    if (m_Compact)
+    {
+        // Save the current dimensions so we can restore them when leaving
+        // compact mode, preserving whatever size the user had chosen.
+        m_NormalWidth = win->width();
+        m_NormalHeight = win->height();
+        win->setMinimumHeight(272);
+        win->resize(win->width(), 272);
+    }
+    else
+    {
+        // Restore saved dimensions, falling back to default size if none
+        // were captured (e.g. app launched directly into compact mode).
+        win->setMinimumHeight(540);
+        win->resize(m_NormalWidth > 0 ? m_NormalWidth : 1420,
+                    m_NormalHeight > 0 ? m_NormalHeight : 690);
+    }
+
+    qCInfo(logBackend) << "compactMode:" << m_Compact;
+    emit compactChanged();
 }
 
 }  // namespace seal

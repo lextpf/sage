@@ -93,16 +93,6 @@ set(SEAL_SOURCES
     src/Logging.cpp
 )
 
-find_program(CLANG_FORMAT_EXE NAMES clang-format)
-if(CLANG_FORMAT_EXE)
-    file(GLOB_RECURSE ALL_SOURCE_FILES src/*.cpp src/*.h)
-    add_custom_target(clang-format
-        COMMAND ${CLANG_FORMAT_EXE} -i ${ALL_SOURCE_FILES}
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Running clang-format on src/"
-    )
-endif()
-
 qt_standard_project_setup()
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)

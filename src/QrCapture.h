@@ -15,6 +15,21 @@ namespace seal
  *
  * ## :material-camera: Capture Flow
  *
+ * ```mermaid
+ * ---
+ * config:
+ *   theme: dark
+ *   look: handDrawn
+ * ---
+ * flowchart LR
+ *     Enum["Enumerate\ncameras"] --> Probe["Probe &\nscore"]
+ *     Probe --> Select["Select\nbest"]
+ *     Select --> Warmup["Warmup\n(auto-exposure)"]
+ *     Warmup --> Detect{"QR\ndetected?"}
+ *     Detect -->|yes| Copy["Secure copy\n& wipe"]
+ *     Detect -->|no / Esc| Cancel["Cancel"]
+ * ```
+ *
  * 1. A DirectShow camera is selected via priority scoring.
  * 2. A live preview window opens while auto-exposure settles.
  * 3. `cv::QRCodeDetector` scans each frame (grayscale + downscale).
@@ -41,6 +56,18 @@ namespace seal
  * `std::string` in pageable memory.  This is the only window where
  * the plaintext sits outside locked pages; it is wiped immediately
  * after copying into the `secure_string`.
+ *
+ * Configurable via environment variables:
+ * - `TESS_CAMERA_WARMUP_MS` - auto-exposure warm-up period (default: 2000 ms)
+ * - `TESS_CAPTURE_TIMEOUT_SEC` - detection loop timeout (default: 60 s, range 5-300)
+ * - `TESS_CAMERA_INDEX` - force a specific camera index instead of auto-selection
+ */
+
+/**
+ * @brief Launch the webcam and scan for a QR code.
+ * @return Decoded QR text in a secure string. Returns an empty string
+ *         if no QR code is detected before timeout, the user presses
+ *         Escape, or camera initialization fails.
  */
 secure_string<> captureQrFromWebcam();
 

@@ -28,8 +28,10 @@ namespace seal
  *
  * The user clicks a masked field to begin a 3-second countdown, after
  * which the real value is typed into the currently focused application
- * via `SendInput` keystroke injection (delegated to TypeSecret()).
+ * via `SendInput` keystroke injection (delegated to typeSecret()).
  * Press Enter or Escape to dismiss the view.
+ *
+ * @see typeSecret
  *
  * ## :material-console: Console State
  *
@@ -182,6 +184,9 @@ seal::basic_secure_string<wchar_t> readPasswordSecureDesktop(
  * @param prompt Text shown before the masked input (default: "Password: ").
  * @return The entered password in a secure wide string.
  * @throw std::runtime_error on Escape or Ctrl+C.
+ *
+ * @note Characters are read via `_getch()` in the console's active codepage
+ *       (often Windows-1252), not UTF-8.
  */
 seal::basic_secure_string<wchar_t> readPasswordConsole(const char* prompt = "Password: ");
 

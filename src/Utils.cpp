@@ -1,9 +1,3 @@
-/**
- * @file Utils.cpp
- * @brief String, hex, and file utility implementations for seal.
- * @author seal Contributors
- */
-
 #include "Utils.h"
 
 #include <algorithm>
@@ -72,10 +66,15 @@ std::vector<std::string> extractHexTokens(const std::string& raw)
     if (!cur.empty())
         tokens.push_back(cur);
 
+    // Minimum hex length: a valid ciphertext blob must contain at least
+    // salt + IV + GCM tag (all hex-encoded, so *2). Anything shorter cannot
+    // be a real AES-256-GCM ciphertext and is filtered out to avoid false matches.
     constexpr size_t min_hex_chars = (cfg::SALT_LEN + cfg::IV_LEN + cfg::TAG_LEN) * 2;
     std::vector<std::string> good;
     for (auto& t : tokens)
     {
+        // Must be even length (each byte = 2 hex chars) and at least as long
+        // as the mandatory header fields, and consist entirely of hex digits.
         if ((t.size() % 2) == 0 && t.size() >= min_hex_chars)
         {
             bool allhex = std::all_of(
@@ -89,18 +88,17 @@ std::vector<std::string> extractHexTokens(const std::string& raw)
 
 std::string add_ext(const std::string& s, std::string_view ext)
 {
-    return std::string(s) + std::string(ext);
+    std::string result;
+    result.reserve(s.size() + ext.size());
+    result.append(s);
+    result.append(ext);
+    return result;
 }
 
 std::string strip_ext_ci(const std::string& s, std::string_view ext)
 {
-    using CharT = char;
-    if (s.size() >= ext.size() &&
-        ends_with_ci(
-            std::basic_string_view<CharT>(s.data(), s.size()).substr(s.size() - ext.size()), ext))
-    {
+    if (ends_with_ci(std::string_view{s}, ext))
         return s.substr(0, s.size() - ext.size());
-    }
     return s;
 }
 
@@ -123,6 +121,47 @@ std::string joinPath(const std::string& dir, const char* name)
         r.push_back('\\');
     r.append(name);
     return r;
+}
+
+// Convert a UTF-8 std::string to a VirtualLock'd secure wchar_t string.
+// Uses the standard Win32 "size query then convert" pattern:
+//   1. Call MultiByteToWideChar with nullptr output to get the required wchar_t count.
+//   2. Resize the locked-page buffer to that count.
+//   3. Call again to perform the actual conversion into the secure buffer.
+seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>> utf8ToSecureWide(
+    const std::string& utf8)
+{
+    seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>> result;
+    if (utf8.empty())
+        return result;
+    // First call: query output size (lpWideCharStr=nullptr, cchWideChar=0)
+    int need = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (need > 0)
+    {
+        result.s.resize(need);
+        // Second call: perform the conversion into the locked buffer
+        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), result.s.data(), need);
+    }
+    return result;
+}
+
+// Convert a secure wchar_t string back to a UTF-8 std::string.
+// Same "size query then convert" pattern as utf8ToSecureWide, but in reverse
+// via WideCharToMultiByte. The returned std::string is NOT in locked memory,
+// so the caller should cleanse it promptly after use.
+std::string secureWideToUtf8(
+    const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& wide)
+{
+    if (wide.s.empty())
+        return {};
+    // First call: query required byte count (lpMultiByteStr=nullptr, cbMultiByte=0)
+    int need = WideCharToMultiByte(
+        CP_UTF8, 0, wide.s.data(), (int)wide.s.size(), nullptr, 0, nullptr, nullptr);
+    std::string out(need, '\0');
+    // Second call: perform the conversion
+    WideCharToMultiByte(
+        CP_UTF8, 0, wide.s.data(), (int)wide.s.size(), out.data(), need, nullptr, nullptr);
+    return out;
 }
 
 }  // namespace seal::utils

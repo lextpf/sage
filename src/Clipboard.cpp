@@ -4,6 +4,7 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 
+#include <chrono>
 #include <cstring>
 #include <thread>
 
@@ -11,8 +12,10 @@ namespace
 {
 
 // RAII guard for OpenClipboard / CloseClipboard.
-// Does NOT empty the clipboard on construction - callers that need to
-// write must call EmptyClipboard() explicitly after acquiring the lock.
+// Does NOT call EmptyClipboard on construction because read-only callers
+// (e.g. copyWithTTL's comparison thread) need to inspect the clipboard
+// without destroying its contents. Write callers must explicitly call
+// EmptyClipboard() after locking.
 struct ClipboardLock
 {
     bool ok = false;
@@ -30,6 +33,11 @@ struct ClipboardLock
     ClipboardLock(const ClipboardLock&) = delete;
     ClipboardLock& operator=(const ClipboardLock&) = delete;
 };
+
+// Joinable TTL thread. Stored at file scope so its destructor runs during
+// static destruction, guaranteeing the thread is joined before the process
+// exits. Assigning a new jthread auto-joins the previous one.
+std::jthread s_TtlThread;
 
 }  // namespace
 
@@ -60,6 +68,8 @@ bool Clipboard::setText(const std::string& text)
     }
 
     SIZE_T bytes = (static_cast<SIZE_T>(wlen) + 1) * sizeof(wchar_t);
+    // GMEM_MOVEABLE is required by the clipboard API - the system needs to
+    // relocate the block when other processes request the data.
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
     if (!hMem)
     {
@@ -85,7 +95,9 @@ bool Clipboard::setText(const std::string& text)
     p[written] = L'\0';
     GlobalUnlock(hMem);
 
-    // SetClipboardData takes ownership of hMem on success
+    // SetClipboardData takes ownership of hMem on success - the system
+    // manages its lifetime from here, so we must NOT call GlobalFree.
+    // Only free on failure (when ownership was never transferred).
     if (!SetClipboardData(CF_UNICODETEXT, hMem))
     {
         GlobalFree(hMem);
@@ -103,13 +115,27 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
         return false;
     }
 
-    // Detached thread: sleeps, then scrubs the clipboard if content is unchanged
-    std::thread(
-        [val = std::move(val), ttl_ms]() mutable
+    // Joinable TTL thread: sleeps for the TTL in short increments (so it
+    // can respond to stop_requested during static destruction), then checks
+    // whether the clipboard still holds our value before clearing.
+    s_TtlThread = std::jthread(
+        [val = std::move(val), ttl_ms](std::stop_token stop) mutable
         {
-            Sleep(ttl_ms);
+            // Sleep in 100ms increments so the thread can exit promptly
+            // when the jthread destructor requests stop at process exit.
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl_ms);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (stop.stop_requested())
+                {
+                    seal::Cryptography::cleanseString(val);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
 
-            // Open clipboard without emptying - we only want to read-compare
+            // Open clipboard without emptying - we only want to read-compare.
+            // ClipboardLock intentionally skips EmptyClipboard (see its comment).
             ClipboardLock lock;
             if (!lock.ok)
             {
@@ -125,14 +151,20 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
             {
                 // Round-trip current clipboard UTF-16 back to UTF-8 for comparison
                 int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-                std::string cur(need ? static_cast<size_t>(need) - 1 : 0, '\0');
-                if (need)
+                std::string cur(need > 0 ? static_cast<size_t>(need) : 0, '\0');
+                if (need > 0)
                 {
-                    WideCharToMultiByte(CP_UTF8, 0, w, -1, cur.data(), need, nullptr, nullptr);
+                    int written =
+                        WideCharToMultiByte(CP_UTF8, 0, w, -1, cur.data(), need, nullptr, nullptr);
+                    if (written > 0 && !cur.empty() && cur.back() == '\0')
+                    {
+                        cur.pop_back();
+                    }
                 }
                 GlobalUnlock(h);
 
-                // Constant-time compare to avoid timing leaks
+                // Constant-time compare to prevent a timing side-channel
+                // from leaking clipboard contents byte-by-byte.
                 same = seal::Cryptography::ctEqualAny(cur, val);
             }
 
@@ -144,8 +176,7 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
 
             seal::Cryptography::cleanseString(val);
             seal::Cryptography::trimWorkingSet();
-        })
-        .detach();
+        });
 
     return true;
 }
@@ -167,22 +198,23 @@ bool Clipboard::copyInputFile()
     return copyWithTTL(buf);
 }
 
-/// @brief Heuristic check for suspicious global keyboard hooks.
-/// Installs a temporary WH_KEYBOARD_LL hook and measures the time
-/// CallNextHookEx takes. If another hook in the chain adds latency
-/// beyond a threshold, a third-party hook is likely present.
-/// Returns true if a suspicious hook is detected.
+// Heuristic check for suspicious global keyboard hooks.
+// Installs a temporary WH_KEYBOARD_LL hook and measures the time
+// CallNextHookEx takes. If another hook in the chain adds latency
+// beyond a threshold, a third-party hook is likely present.
+// Returns true if a suspicious hook is detected.
 static bool isKeyboardHookPresent()
 {
-    // Quick check: verify the foreground window belongs to a reasonable process.
-    // A transparent overlay injecting hooks would own the foreground but have
-    // a suspicious class name or zero-sized window rect.
+    // Heuristic 1 - zero-size foreground window check.
+    // A common keylogger technique is a transparent overlay that owns the
+    // foreground but renders nothing visible. A legitimate window always has
+    // non-zero dimensions, so a zero-size rect is a strong indicator of a
+    // hook-injection overlay.
     HWND fg = GetForegroundWindow();
     if (fg)
     {
         RECT rc{};
         GetWindowRect(fg, &rc);
-        // A zero-size foreground window is suspicious (hook overlay).
         if (rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0)
         {
             OutputDebugStringA(
@@ -191,8 +223,12 @@ static bool isKeyboardHookPresent()
         }
     }
 
-    // Timing-based heuristic: install a temporary low-level keyboard hook
-    // and measure the round-trip latency of the hook chain.
+    // Heuristic 2 - timing-based hook detection.
+    // We install our own temporary WH_KEYBOARD_LL hook, inject a no-op
+    // keystroke via SendInput, and measure how long the hook chain takes
+    // to process it. An empty chain completes in <2ms; a third-party hook
+    // adds measurable latency (>15ms threshold). This catches hooks that
+    // don't manifest as visible windows.
     struct HookCtx
     {
         LARGE_INTEGER freq{};
@@ -221,6 +257,9 @@ static bool isKeyboardHookPresent()
     dummyInput[0].ki.dwFlags = KEYEVENTF_UNICODE;
     dummyInput[1] = dummyInput[0];
     dummyInput[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+    // Inject the dummy keystroke so the hook chain processes it.
+    SendInput(2, dummyInput, sizeof(INPUT));
 
     // Pump messages briefly to let the hook fire
     MSG msg;
@@ -287,7 +326,11 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
     // Give the user time to switch focus to the target window
     Sleep(delay_ms);
 
-    // Build key-down / key-up pairs for each UTF-16 code unit
+    // Build key-down / key-up pairs for each UTF-16 code unit.
+    // KEYEVENTF_UNICODE tells SendInput to use the scan-code field as a raw
+    // Unicode code point, bypassing virtual-key translation entirely. This
+    // lets us type arbitrary Unicode characters (accented letters, symbols,
+    // CJK) without needing a matching keyboard layout or VK code.
     std::vector<INPUT> seq;
     seq.reserve(static_cast<size_t>(w.size()) * 2);
     for (wchar_t ch : w)
@@ -302,8 +345,10 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
         seq.push_back(up);
     }
 
-    // Send one event at a time with a small randomised delay after each pair
-    // to avoid tripping input-rate limiters in target applications
+    // Send one event at a time with a randomised inter-key delay (5 + tick%8
+    // = 5..12ms) after each down/up pair. The jitter prevents input-rate
+    // limiters in web apps and remote desktops from dropping or reordering
+    // keystrokes that arrive faster than their processing loop.
     for (size_t i = 0; i < seq.size(); ++i)
     {
         SendInput(1, &seq[i], sizeof(INPUT));
@@ -313,7 +358,9 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
         }
     }
 
-    // Scrub sensitive keystroke data before returning
+    // Scrub sensitive keystroke data before returning. SecureZeroMemory is
+    // not elided by the compiler (unlike memset), so the INPUT array and
+    // wstring buffer are guaranteed to be zeroed in physical memory.
     SecureZeroMemory(seq.data(), seq.size() * sizeof(INPUT));
     SecureZeroMemory(w.data(), w.size() * sizeof(wchar_t));
     return true;
@@ -325,9 +372,21 @@ bool openInputInNotepad()
     HINSTANCE h = ShellExecuteA(nullptr, "open", "notepad.exe", file, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(h) <= 32)
     {
-        // Fallback: ShellExecuteA can fail on restricted accounts
-        int ret = system("cmd /c start \"\" notepad.exe seal");
-        return (ret == 0);
+        // Fallback: use CreateProcessW instead of system() to avoid
+        // command injection risks from cmd /c.
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        wchar_t cmdLine[] = L"notepad.exe seal";
+        BOOL ok = CreateProcessW(
+            nullptr, cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+        if (ok)
+        {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return true;
+        }
+        return false;
     }
     return true;
 }
@@ -350,7 +409,10 @@ void wipeConsoleBuffer()
     COORD home{0, 0};
     DWORD written = 0;
 
-    // Overwrite every character cell, then reset attributes and cursor
+    // Overwrite every character cell with spaces so previously displayed
+    // secrets (e.g. decrypted passwords shown during console mode) cannot
+    // be recovered by visual inspection or screen-scraping tools. We also
+    // reset attributes and the cursor position to leave a clean slate.
     FillConsoleOutputCharacterA(hOut, ' ', cells, home, &written);
     FillConsoleOutputAttribute(hOut, info.wAttributes, cells, home, &written);
     SetConsoleCursorPosition(hOut, home);

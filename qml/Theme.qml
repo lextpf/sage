@@ -236,9 +236,9 @@ QtObject {
     readonly property int hoverDuration:  150
     readonly property int pressDuration:  80
 
-    readonly property int radiusSmall:  8
-    readonly property int radiusMedium: 10
-    readonly property int radiusLarge:  12
+    readonly property int radiusSmall:  10
+    readonly property int radiusMedium: 12
+    readonly property int radiusLarge:  14
 
     readonly property int spacingSmall:  10
     readonly property int spacingMedium: 14
@@ -283,6 +283,11 @@ QtObject {
     readonly property string iconSun:          "qrc:/qt/qml/seal/assets/svgs/sun-bright.svg"
     readonly property string iconXmark:        "qrc:/qt/qml/seal/assets/svgs/xmark.svg"
     readonly property string iconMoon:         "qrc:/qt/qml/seal/assets/svgs/moon.svg"
+    readonly property string iconChevronDown:  "qrc:/qt/qml/seal/assets/svgs/chevron-down.svg"
+    readonly property string iconPowerOff:    "qrc:/qt/qml/seal/assets/svgs/power-off.svg"
+    readonly property string iconThumbtack:   "qrc:/qt/qml/seal/assets/svgs/thumbtack.svg"
+    readonly property string iconCompress:    "qrc:/qt/qml/seal/assets/svgs/compress.svg"
+    readonly property string iconExpand:      "qrc:/qt/qml/seal/assets/svgs/expand.svg"
     readonly property string iconTriangleExclamation: "qrc:/qt/qml/seal/assets/svgs/triangle-exclamation.svg"
     readonly property string iconCircleInfo:  "qrc:/qt/qml/seal/assets/svgs/circle-info.svg"
     readonly property string iconCircleCheck: "qrc:/qt/qml/seal/assets/svgs/circle-check.svg"

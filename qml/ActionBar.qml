@@ -25,6 +25,7 @@ RowLayout {
     property bool hasSelection: false
     property bool isFillArmed: false
     property int fillCountdownSeconds: 0
+    property bool isCompact: false
 
     signal addClicked()
     signal editClicked()
@@ -89,6 +90,7 @@ RowLayout {
             implicitWidth: 120
             implicitHeight: 38
             radius: Theme.radiusMedium
+            clip: true
             // Four-state gradient: disabled / normal / hovered / pressed.
             gradient: Gradient {
                 GradientStop { position: 0; color: !tBtn.enabled ? tBtn._disTop : tBtn.pressed ? tBtn.tintPressed : tBtn.hovered ? tBtn.tintHoverTop : tBtn.tintTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -107,6 +109,7 @@ RowLayout {
     }
 
     TintedButton {
+        visible: !root.isCompact
         text: "Add"
         faIcon: Theme.iconPlus
         tintTop:         Theme.btnAddTop
@@ -121,6 +124,7 @@ RowLayout {
     }
 
     TintedButton {
+        visible: !root.isCompact
         text: "Edit"
         faIcon: Theme.iconPen
         enabled: root.hasSelection
@@ -136,6 +140,7 @@ RowLayout {
     }
 
     TintedButton {
+        visible: !root.isCompact
         text: "Delete"
         faIcon: Theme.iconTrash
         enabled: root.hasSelection
@@ -210,6 +215,7 @@ RowLayout {
             implicitWidth: 160
             implicitHeight: 38
             radius: Theme.radiusMedium
+            clip: true
             // Separate color branches: armed (orange) vs normal (yellow-green).
             gradient: Gradient {
                 GradientStop {
@@ -241,5 +247,5 @@ RowLayout {
         onPressed: fillRipple.trigger(fillHover.point.position.x, fillHover.point.position.y)
     }
 
-    Item { Layout.fillWidth: true }
+    Item { Layout.fillWidth: true; visible: !root.isCompact }
 }

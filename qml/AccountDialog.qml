@@ -263,6 +263,7 @@ Popup {
                     implicitWidth: 90
                     implicitHeight: 34
                     radius: Theme.radiusMedium
+                    clip: true
                     gradient: Gradient {
                         GradientStop { position: 0; color: cancelButton.pressed ? Theme.ghostBtnPressed : cancelButton.hovered ? Theme.ghostBtnHoverTop : Theme.ghostBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                         GradientStop { position: 1; color: cancelButton.pressed ? Theme.ghostBtnPressed : cancelButton.hovered ? Theme.ghostBtnHoverEnd : Theme.ghostBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -309,6 +310,7 @@ Popup {
                     implicitWidth: 90
                     implicitHeight: 34
                     radius: Theme.radiusMedium
+                    clip: true
                     gradient: Gradient {
                         GradientStop { position: 0; color: okButton.pressed ? Theme.btnPressTop : okButton.hovered ? Theme.btnHoverTop : Theme.btnGradTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                         GradientStop { position: 1; color: okButton.pressed ? Theme.btnPressBot : okButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }

@@ -1,9 +1,3 @@
-/**
- * @file Cryptography.cpp
- * @brief Core cryptographic primitive implementations for seal.
- * @author seal Contributors
- */
-
 #include "Cryptography.h"
 
 #include <sddl.h>
@@ -18,6 +12,11 @@ namespace seal
 
 bool Cryptography::ctEqualRaw(const unsigned char* a, const unsigned char* b, size_t n)
 {
+    // Constant-time comparison: XOR each byte pair and OR-accumulate into v.
+    // If any byte differs, at least one bit in v will be set. Because every
+    // iteration executes the same operations regardless of match/mismatch,
+    // the CPU timing is data-independent -- preventing timing side-channels
+    // that could let an attacker deduce which byte position differs first.
     unsigned char v = 0;
     for (size_t i = 0; i < n; ++i)
         v |= static_cast<unsigned char>(a[i] ^ b[i]);
@@ -40,7 +39,7 @@ void Cryptography::hardenProcessAccess()
 
     // SDDL string:
     //  D:  = DACL
-    //  (D;;0x1418;;WD)  = Deny Everyone: PROCESS_VM_READ (0x10) | PROCESS_VM_WRITE (0x20) |
+    //  (D;;0x147A;;;WD) = Deny Everyone: PROCESS_VM_READ (0x10) | PROCESS_VM_WRITE (0x20) |
     //                      PROCESS_VM_OPERATION (0x8) | PROCESS_DUP_HANDLE (0x40) |
     //                      PROCESS_QUERY_INFORMATION (0x400) | PROCESS_CREATE_THREAD (0x2) = 0x147A
     //  (A;;GA;;;SY)     = Allow SYSTEM: GENERIC_ALL
@@ -99,7 +98,13 @@ void Cryptography::detectDebugger()
 #else
         OutputDebugStringA("[seal] FATAL: debugger detected\n");
 #endif
+        // 0xDEAD is our recognizable "security kill" exit code, making it
+        // easy to identify anti-debug terminations in logs and crash reports.
         TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        // __fastfail(7) == FAST_FAIL_FATAL_APP_EXIT: triggers an immediate
+        // kernel-level process termination that cannot be caught or handled.
+        // Belt-and-suspenders fallback in case TerminateProcess is hooked.
+        __fastfail(7);
         return;
     }
 
@@ -112,7 +117,8 @@ void Cryptography::detectDebugger()
 #else
         OutputDebugStringA("[seal] FATAL: remote debugger detected\n");
 #endif
-        TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        TerminateProcess(GetCurrentProcess(), 0xDEAD);  // security kill exit code
+        __fastfail(7);  // FAST_FAIL_FATAL_APP_EXIT -- unhookable kernel kill
         return;
     }
 
@@ -139,7 +145,8 @@ void Cryptography::detectDebugger()
 #else
                 OutputDebugStringA("[seal] FATAL: kernel debug port detected\n");
 #endif
-                TerminateProcess(GetCurrentProcess(), 0xDEAD);
+                TerminateProcess(GetCurrentProcess(), 0xDEAD);  // security kill exit code
+                __fastfail(7);  // FAST_FAIL_FATAL_APP_EXIT -- unhookable kernel kill
                 return;
             }
         }
@@ -162,6 +169,9 @@ using PFN_SetProcessMitigationPolicy = BOOL(WINAPI*)(PROCESS_MITIGATION_POLICY, 
 
 BOOL Cryptography::setSecureProcessMitigations(bool allowDynamicCode)
 {
+    // Dynamically resolve SetProcessMitigationPolicy instead of linking directly.
+    // This API only exists on Windows 8+; dynamic resolution lets us degrade
+    // gracefully on older systems instead of failing to load at startup.
     HMODULE hK32 = GetModuleHandleW(L"kernel32.dll");
     if (!hK32)
         return FALSE;
@@ -247,7 +257,10 @@ BOOL Cryptography::tryEnableLockPrivilege()
         return FALSE;
     }
 
-    // CRITICAL: Check GetLastError() even when AdjustTokenPrivileges returns TRUE
+    // CRITICAL: AdjustTokenPrivileges has a well-known quirk -- it returns TRUE
+    // even when it only partially succeeds (e.g., the privilege doesn't exist in
+    // the token). The only reliable way to confirm the privilege was actually
+    // enabled is to check GetLastError() for ERROR_SUCCESS immediately after.
     DWORD gle = GetLastError();
     CloseHandle(hToken);
 
@@ -287,13 +300,11 @@ std::vector<unsigned char> Cryptography::deriveKey(const SecurePwd& pwd,
     using CharT = std::remove_pointer_t<decltype(pwd.s.data())>;
     std::vector<unsigned char> key(seal::cfg::KEY_LEN);
 
+    // RWGuard temporarily changes the password's memory page from PAGE_NOACCESS
+    // to PAGE_READWRITE so that scrypt can read the raw bytes. The guard's
+    // destructor restores PAGE_NOACCESS, ensuring the password is inaccessible
+    // in memory outside this narrow window.
     seal::RWGuard<CharT> guard(pwd.s.data());
-
-    // scrypt parameters
-    constexpr uint64_t N = 1ULL << 16;  // Increase N for higher security
-    constexpr uint64_t r = 8;
-    constexpr uint64_t p = 1;
-    constexpr uint64_t maxmem = 128ULL * 1024 * 1024;
 
     const char* pass = nullptr;
     size_t passlen = 0;
@@ -309,10 +320,17 @@ std::vector<unsigned char> Cryptography::deriveKey(const SecurePwd& pwd,
     timer.start();
 #endif
 
-    opensslCheck(
-        EVP_PBE_scrypt(
-            pass, passlen, salt.data(), salt.size(), N, r, p, maxmem, key.data(), key.size()),
-        "scrypt failed");
+    opensslCheck(EVP_PBE_scrypt(pass,
+                                passlen,
+                                salt.data(),
+                                salt.size(),
+                                seal::cfg::SCRYPT_N,
+                                seal::cfg::SCRYPT_R,
+                                seal::cfg::SCRYPT_P,
+                                seal::cfg::SCRYPT_MAXMEM,
+                                key.data(),
+                                key.size()),
+                 "scrypt failed");
 
 #ifdef USE_QT_UI
     qCDebug(logCrypto) << "deriveKey: scrypt completed in" << timer.elapsed() << "ms";
@@ -368,7 +386,12 @@ std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned 
     opensslCheck(EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_GET_TAG, (int)tag.size(), tag.data()),
                  "GET_TAG failed");
 
-    // Serialize packet
+    // Serialize packet into wire format:
+    // [ AAD (optional) | salt | IV | ciphertext | GCM auth tag ]
+    // The receiver uses fixed-size fields (SALT_LEN, IV_LEN, TAG_LEN) to
+    // parse the packet back apart; ciphertext length is inferred from the
+    // remaining bytes. AAD is included unencrypted so the receiver can
+    // verify the header before doing any expensive key derivation.
     std::vector<unsigned char> out;
     out.reserve(aad.size() + salt.size() + iv.size() + ct.size() + tag.size());
     if (!aad.empty())
@@ -394,7 +417,9 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     const unsigned char* p = packet.data();
     size_t n = packet.size();
 
-    // If AAD required, verify & strip it
+    // Parse the wire format: [ AAD | salt | IV | ciphertext | tag ]
+    // Walk through the packet using known fixed-size field lengths,
+    // with 'off' tracking the current read position past the AAD.
     size_t off = 0;
     if (!aad_expected.empty())
     {
@@ -409,6 +434,8 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     if (n < off + seal::cfg::SALT_LEN + seal::cfg::IV_LEN + seal::cfg::TAG_LEN)
         throw std::runtime_error("Ciphertext too short");
 
+    // Slice out fixed-size fields; ciphertext occupies whatever remains
+    // between IV and the trailing tag.
     const unsigned char* salt = p + off;
     const unsigned char* iv = p + off + seal::cfg::SALT_LEN;
     const unsigned char* ct = p + off + seal::cfg::SALT_LEN + seal::cfg::IV_LEN;
@@ -448,8 +475,11 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
                  "DecryptUpdate(CT) failed");
 
     // Set tag and finalize (auth check happens here).
-    // Copy tag into a mutable buffer - OpenSSL's API takes void* even though
-    // SET_TAG does not modify the data.
+    // We copy the tag into a mutable buffer because EVP_CIPHER_CTX_ctrl's
+    // SET_TAG parameter is typed as void*, not const void*, even though the
+    // call only reads the tag. Passing the const pointer from the packet
+    // directly would require a const_cast, which is brittle -- the copy
+    // sidesteps undefined behavior if OpenSSL's internals ever do mutate it.
     std::vector<unsigned char> tagCopy(tag, tag + seal::cfg::TAG_LEN);
     opensslCheck(
         EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tagCopy.data()),
@@ -470,6 +500,12 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     return plain;
 }
 
+// Explicit template instantiations for both narrow (char/UTF-8) and wide
+// (wchar_t/UTF-16) password types. Because the template definitions live in
+// this .cpp file rather than the header, the linker would otherwise fail with
+// unresolved symbols. These instantiations force the compiler to emit object
+// code for both specializations here, so other translation units can link to
+// them without needing the full template body.
 template std::vector<unsigned char> Cryptography::deriveKey(const secure_string<>&,
                                                             std::span<const unsigned char>);
 template std::vector<unsigned char> Cryptography::deriveKey(const basic_secure_string<wchar_t>&,

@@ -6,6 +6,7 @@
 #include <QTimer>
 
 #include <windows.h>
+#include <atomic>
 #include <vector>
 
 #include "Cryptography.h"
@@ -93,6 +94,7 @@ class FillController : public QObject
     Q_PROPERTY(int countdownSeconds READ countdownSeconds NOTIFY countdownSecondsChanged)
 
 public:
+    /// @enum State
     /// @brief Fill controller state machine states.
     enum class State
     {
@@ -129,13 +131,19 @@ public:
      * and master password (caller must keep them alive until fill completes
      * or is cancelled).
      *
+     * If the controller is already armed (e.g. the user selected a different
+     * record), the previous session is cancelled and hooks are reinstalled
+     * for the new record.
+     *
      * @param recordIndex Index into the records vector
      * @param records     Reference to the vault records (must outlive the fill)
      * @param masterPw    Master password for on-demand decryption (must outlive the fill)
+     * @return `true` if hooks were installed and arming succeeded.
      */
-    void arm(int recordIndex,
-             const std::vector<seal::VaultRecord>& records,
-             const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw);
+    [[nodiscard]] bool arm(
+        int recordIndex,
+        const std::vector<seal::VaultRecord>& records,
+        const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw);
 
     /**
      * @brief Cancel the current fill operation and remove all hooks.
@@ -165,7 +173,15 @@ private slots:
     /// @brief Called every second while armed; decrements countdown and auto-cancels at zero.
     void onTimeoutTick();
 
-    /// @brief Queued from the mouse hook; decrypts and types the pending credential field.
+    /**
+     * @brief Queued from the mouse hook; decrypts and types the pending credential field.
+     *
+     * Waits for the Ctrl key to be released (up to 2 s), performs on-demand
+     * AES-256-GCM decryption of the selected record, sends keystrokes via
+     * `SendInput`, and immediately wipes the plaintext. After typing the
+     * username, transitions to ArmedPassword; after the password, tears down
+     * hooks and emits fillCompleted.
+     */
     void performType();
 
 private:
@@ -191,7 +207,7 @@ private:
     static LRESULT CALLBACK keyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 
     /// @brief Singleton - only one controller can own the global hooks at a time.
-    static FillController* s_instance;
+    static std::atomic<FillController*> s_instance;
 
     /// @brief Which credential field to type next.
     enum class TypeTarget
@@ -200,8 +216,8 @@ private:
         Password
     };
 
-    State m_State = State::Idle;  ///< Current state machine state.
-    int m_RecordIndex = -1;       ///< Index of the armed vault record.
+    std::atomic<State> m_State{State::Idle};  ///< Current state machine state.
+    int m_RecordIndex = -1;                   ///< Index of the armed vault record.
     const std::vector<seal::VaultRecord>* m_Records =
         nullptr;  ///< Borrowed pointer to vault records.
     const seal::basic_secure_string<wchar_t,
@@ -211,14 +227,13 @@ private:
     HHOOK m_MouseHook = nullptr;     ///< WH_MOUSE_LL hook handle.
     HHOOK m_KeyboardHook = nullptr;  ///< WH_KEYBOARD_LL hook handle.
 
-    QTimer m_TimeoutTimer;                              ///< 1-second tick for countdown.
-    int m_RemainingSeconds = 0;                         ///< Seconds until auto-cancel.
-    QString m_StatusText;                               ///< Human-readable status for QML.
-    TypeTarget m_PendingTarget = TypeTarget::Username;  ///< Field to type on next click.
+    QTimer m_TimeoutTimer;       ///< 1-second tick for countdown.
+    int m_RemainingSeconds = 0;  ///< Seconds until auto-cancel.
+    QString m_StatusText;        ///< Human-readable status for QML.
+    std::atomic<TypeTarget> m_PendingTarget{
+        TypeTarget::Username};  ///< Field to type on next click.
 
     static constexpr int FILL_TIMEOUT_SECONDS = 30;  ///< Max seconds to wait for user click.
-    static constexpr int PRE_TYPE_DELAY_MS =
-        150;  ///< Reserved delay before typing (unused currently).
 };
 
 }  // namespace seal

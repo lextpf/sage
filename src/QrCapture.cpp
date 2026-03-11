@@ -40,7 +40,11 @@ constexpr size_t kMaxQrDataBytes = 4096;
 // 1 GiB process memory cap to block heap-spray / decompression bombs.
 constexpr SIZE_T kCaptureMemoryLimitBytes = 1ULL << 30;
 
-// RAII Job Object sandbox caps process memory during capture, lifts on destruction.
+// RAII Job Object that caps process memory at a fixed limit while OpenCV is active.
+// OpenCV may decode arbitrary camera frames; a malicious virtual-camera driver or
+// a decompression bomb could trigger unbounded allocations. The Job Object enforces
+// a hard 1 GiB ceiling. The destructor clears the limit so the rest of the process
+// (UI, vault ops) runs unconstrained.
 struct CaptureJobGuard
 {
     HANDLE hJob = nullptr;
@@ -91,6 +95,12 @@ std::wstring ToLower(std::wstring s)
     return s;
 }
 
+// Single source of truth for virtual-camera keywords. Used by
+// ChooseCameraIndexFromNames, IsVirtualCameraName, and BuildCameraPriorityList
+// to avoid duplication and ensure consistent filtering.
+const std::vector<std::wstring> kVirtualCameraKeywords = {
+    L"camo", L"virtual", L"obs", L"droidcam", L"ndi"};
+
 bool EnvFlagEnabled(const char* key)
 {
     if (const char* raw = std::getenv(key))
@@ -134,7 +144,11 @@ bool TryGetEnvIndex(const char* key, int& out)
     return false;
 }
 
-// Walk DirectShow's device enumerator to list all connected webcams by friendly name.
+// Walk DirectShow's COM device enumerator (CLSID_SystemDeviceEnum) to list
+// all video capture devices by their "FriendlyName" property.
+// Returns one name per device in enumeration order (index 0 = first device).
+// Empty strings are inserted for devices whose name cannot be read so that
+// indices stay aligned with OpenCV's integer camera indices.
 std::vector<std::wstring> EnumerateVideoDeviceNamesDShow()
 {
     std::vector<std::wstring> names;
@@ -193,9 +207,14 @@ std::vector<std::wstring> EnumerateVideoDeviceNamesDShow()
     return names;
 }
 
-// Pick the best camera index: forced env > preferred keyword > first non-virtual.
+// Pick the best camera index using a priority cascade:
+//   1. TESS_CAMERA_INDEX env var (user override, highest priority)
+//   2. Preferred keyword match (e.g. "razer kiyo") - known-good physical webcams
+//   3. First non-virtual camera (skips OBS, Camo, DroidCam, etc.)
+//   4. Fallback to index 0
 int ChooseCameraIndexFromNames(const std::vector<std::wstring>& names, bool log)
 {
+    // Priority 1: forced env override
     if (const char* forced = std::getenv("TESS_CAMERA_INDEX"))
     {
         char* end = nullptr;
@@ -222,7 +241,7 @@ int ChooseCameraIndexFromNames(const std::vector<std::wstring>& names, bool log)
         }
     }
 
-    // Preferred physical cameras by keyword match (most specific first).
+    // Priority 2: preferred physical cameras by keyword match (most specific first).
     const std::vector<std::wstring> preferredKeywords = {L"razer kiyo", L"razer"};
     for (size_t i = 0; i < names.size(); ++i)
     {
@@ -241,14 +260,13 @@ int ChooseCameraIndexFromNames(const std::vector<std::wstring>& names, bool log)
         }
     }
 
+    // Priority 3: first non-virtual camera.
     // Virtual cameras often produce garbage frames or require special setup.
-    const std::vector<std::wstring> avoidKeywords = {
-        L"camo", L"virtual", L"obs", L"droidcam", L"ndi"};
     for (size_t i = 0; i < names.size(); ++i)
     {
         const std::wstring nameLower = ToLower(names[i]);
         bool avoid = false;
-        for (const auto& kw : avoidKeywords)
+        for (const auto& kw : kVirtualCameraKeywords)
         {
             if (nameLower.find(kw) != std::wstring::npos)
             {
@@ -274,9 +292,7 @@ int ChooseCameraIndexFromNames(const std::vector<std::wstring>& names, bool log)
 bool IsVirtualCameraName(const std::wstring& name)
 {
     const std::wstring nameLower = ToLower(name);
-    const std::vector<std::wstring> avoidKeywords = {
-        L"camo", L"virtual", L"obs", L"droidcam", L"ndi"};
-    for (const auto& kw : avoidKeywords)
+    for (const auto& kw : kVirtualCameraKeywords)
     {
         if (nameLower.find(kw) != std::wstring::npos)
         {
@@ -293,6 +309,8 @@ bool IsObsCameraName(const std::wstring& name)
 }
 
 // Build a de-duplicated probe order: forced > preferred > physical > virtual > fallback 0-3.
+// The set<int> 'seen' ensures each index appears at most once, even if multiple
+// priority tiers would select the same device.
 std::vector<int> BuildCameraPriorityList(const std::vector<std::wstring>& names,
                                          int preferredFromNames)
 {
@@ -432,17 +450,20 @@ struct CameraCandidate
     bool valid = false;
 };
 
-// Higher score = better camera. Favours resolution, DShow backend, and preferred index.
+// Score-based camera ranking. Higher score = better camera.
+//   - Resolution dominates (pixel area / 1000, plus a big bonus for >= 1080p)
+//   - DShow backend bonus (+500): more reliable than MSMF on many UVC devices
+//   - Preferred index bonus (+200): user's or auto-detected favourite camera
 double ScoreCandidate(int index, int w, int h, int preferredIndex, bool backendDshow)
 {
     double score = 0.0;
-    score += (double)w * (double)h / 1000.0;
+    score += (double)w * (double)h / 1000.0;  // base: pixel count
     if (w >= 1900 && h >= 1000)
-        score += 5000.0;
+        score += 5000.0;  // large bonus for Full HD or higher
     if (backendDshow)
-        score += 500.0;
+        score += 500.0;  // DShow is more stable than MSMF on most hardware
     if (index == preferredIndex)
-        score += 200.0;
+        score += 200.0;  // slight boost for the user's preferred camera
     return score;
 }
 
@@ -626,8 +647,12 @@ seal::secure_string<> seal::captureQrFromWebcam()
     // Constrain process memory while OpenCV is active.
     CaptureJobGuard jobGuard(kCaptureMemoryLimitBytes);
 
-    // Avoid a common MSMF startup failure mode on some UVC webcams.
-    _putenv("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS=0");
+    // Disable MSMF hardware transforms. On some UVC webcams, MSMF's MFT
+    // pipeline fails to initialise and hangs or returns black frames.
+    // Setting this env var before any VideoCapture::open() forces MSMF to
+    // use software-only paths, which avoids the startup failure.
+    // _putenv_s is the thread-safe replacement for _putenv on MSVC.
+    _putenv_s("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0");
 
     cv::VideoCapture cap;
     cv::Mat frame;
@@ -637,7 +662,9 @@ seal::secure_string<> seal::captureQrFromWebcam()
         return result;
     }
 
-    // Camera warmup - display live video while auto-exposure settles.
+    // Camera warmup: display live video for a short period so the sensor's
+    // auto-exposure and auto-white-balance converge. Without this, the first
+    // frames are often too dark or washed out for reliable QR detection.
     const int cameraWarmupMs = EnvIntOrDefault("TESS_CAMERA_WARMUP_MS", 250, 0, 5000);
     if (cameraWarmupMs > 0)
     {
@@ -687,7 +714,9 @@ seal::secure_string<> seal::captureQrFromWebcam()
             }
         }
 
-        // Flush stale queued frames so we always process the latest one.
+        // Flush 2 stale frames from the driver's internal queue. VideoCapture
+        // buffers frames; without this, cap.read() returns an old frame and QR
+        // detection lags behind the live camera view by several hundred ms.
         for (int i = 0; i < 2; ++i)
             cap.grab();
         if (!cap.read(frame) || frame.empty())
@@ -701,14 +730,18 @@ seal::secure_string<> seal::captureQrFromWebcam()
             continue;
         }
 
-        // Downscale + grayscale for fast detection.
+        // Convert to grayscale and downscale to 480px wide for fast QR detection.
+        // QR finder patterns are high-contrast; colour info adds no value but doubles
+        // the pixel count. Downscaling further cuts detection time ~4x on 1080p frames.
         cv::Mat gray;
         cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
         const double scale = std::min(1.0, 480.0 / gray.cols);
         if (scale < 1.0)
             cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_AREA);
 
-        // Try normal, then inverted (white-on-black QR codes).
+        // Try standard (dark-on-light) QR first, then invert and retry.
+        // Inverted QR codes (white modules on black background) are used by
+        // some generators; bitwise_not flips them to the standard polarity.
         std::vector<cv::Point> points;
         std::string data = qrDetector.detectAndDecode(gray, points);
         if (data.empty())
@@ -718,10 +751,12 @@ seal::secure_string<> seal::captureQrFromWebcam()
             data = qrDetector.detectAndDecode(gray, points);
         }
 
-        // Move decoded text into locked secure memory, wipe the pageable std::string.
+        // Move decoded text into locked secure memory, then wipe the pageable
+        // std::string so the credential doesn't linger on a swappable heap page.
         if (!data.empty())
         {
-            // Reject anomalously large payloads (QR v40 max is ~4296 bytes).
+            // Reject anomalously large payloads. QR v40 max is ~4296 bytes;
+            // anything bigger likely comes from a crafted virtual-camera frame.
             if (data.size() > kMaxQrDataBytes)
             {
                 std::cerr << "QR data (" << data.size() << " bytes) exceeds " << kMaxQrDataBytes

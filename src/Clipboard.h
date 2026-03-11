@@ -29,9 +29,23 @@ namespace seal
  *
  * ## :material-timer-sand: TTL Scrubbing
  *
+ * ```mermaid
+ * ---
+ * config:
+ *   theme: dark
+ *   look: handDrawn
+ * ---
+ * flowchart LR
+ *     Copy["copyWithTTL()"] --> Sleep["sleep(TTL)"]
+ *     Sleep --> Compare{"content\nunchanged?"}
+ *     Compare -->|yes| Clear["empty clipboard"]
+ *     Compare -->|no| Skip["leave clipboard"]
+ * ```
+ *
  * copyWithTTL() copies data to the clipboard and then spawns a
- * detached background thread that sleeps for a configurable
- * duration (default 6 s). When the thread wakes it performs a
+ * joinable background thread (auto-joined on reassignment or
+ * process exit) that sleeps for a configurable duration
+ * (default 6 s). When the thread wakes it performs a
  * constant-time comparison (`Cryptography::ctEqualAny`) of the current
  * clipboard content against the original value and empties the
  * clipboard only if the content is unchanged - so a manual paste
@@ -70,8 +84,9 @@ public:
      * @brief Copy a byte buffer to the clipboard and auto-scrub after a timeout.
      *
      * Copies @p n bytes of UTF-8 data to the clipboard via setText, then
-     * spawns a detached thread that sleeps for @p ttl_ms milliseconds. When
-     * the thread wakes it re-opens the clipboard, performs a constant-time
+     * spawns a joinable background thread (`std::jthread`, auto-joined on
+     * reassignment or process exit) that sleeps for @p ttl_ms milliseconds.
+     * When the thread wakes it re-opens the clipboard, performs a constant-time
      * comparison of the current content against the original value, and
      * empties the clipboard only if the content is unchanged. The original
      * buffer is securely wiped regardless.
@@ -81,9 +96,9 @@ public:
      * @param ttl_ms Milliseconds before the clipboard is scrubbed (default 6000).
      * @return `true` if the initial clipboard set succeeded.
      *
-     * @post A detached background thread will clear the clipboard after
-     *       @p ttl_ms if the content has not been replaced by another
-     *       application.
+     * @post A background thread (joined at process exit) will clear the
+     *       clipboard after @p ttl_ms if the content has not been replaced
+     *       by another application.
      *
      * @see setText
      * @see Cryptography::ctEqualAny
@@ -178,8 +193,8 @@ public:
 /**
  * @brief Open the `seal` input file in Notepad.
  *
- * Attempts `ShellExecuteA` first; falls back to `cmd /c start notepad.exe`
- * if `ShellExecuteA` fails (e.g. on restricted accounts).
+ * Attempts `ShellExecuteA` first; falls back to `CreateProcessW` with
+ * `notepad.exe seal` if `ShellExecuteA` fails (e.g. on restricted accounts).
  *
  * @return `true` if Notepad was launched successfully.
  */

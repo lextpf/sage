@@ -122,6 +122,164 @@ ApplicationWindow {
         close.accepted = true;
     }
 
+    // Drag area for the title bar strip above content. Covers the full width
+    // except the window-button zone on the right so those stay clickable.
+    MouseArea {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: windowButtons.left
+        height: 36
+        z: 9
+        acceptedButtons: Qt.LeftButton
+        onPressed: function(mouse) { Backend.startWindowDrag() }
+        onDoubleClicked: function(mouse) {
+            if (window.visibility === Window.Maximized)
+                window.showNormal()
+            else
+                window.showMaximized()
+        }
+    }
+
+    // Custom window control buttons pinned to the top-right corner, flush
+    // against the window edge so the hover highlight bleeds to the border.
+    Row {
+        id: windowButtons
+        anchors.top: parent.top
+        anchors.right: parent.right
+        z: 10
+        spacing: 0
+
+        // Always on top (pin)
+        Rectangle {
+            width: 46; height: 36
+            color: pinArea.containsMouse
+                   ? (pinArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
+                   : Backend.isAlwaysOnTop ? Theme.accentSoft : "transparent"
+            Behavior on color { ColorAnimation { duration: 100 } }
+
+            SvgIcon {
+                source: Theme.iconThumbtack
+                width: Theme.px(12)
+                height: Theme.px(12)
+                anchors.centerIn: parent
+                color: Backend.isAlwaysOnTop ? Theme.accent
+                     : pinArea.containsMouse ? Theme.textPrimary : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: 100 } }
+                rotation: Backend.isAlwaysOnTop ? 0 : 30
+                Behavior on rotation { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+            }
+            MouseArea {
+                id: pinArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Backend.toggleAlwaysOnTop()
+            }
+        }
+
+        // Lock vault
+        Rectangle {
+            width: 46; height: 36
+            color: lockArea.containsMouse
+                   ? (lockArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
+                   : "transparent"
+            Behavior on color { ColorAnimation { duration: 100 } }
+            opacity: Backend.passwordSet ? 1.0 : 0.4
+
+            SvgIcon {
+                source: Backend.passwordSet ? Theme.iconLockOpen : Theme.iconLock
+                width: Theme.px(12)
+                height: Theme.px(12)
+                anchors.centerIn: parent
+                color: lockArea.containsMouse && Backend.passwordSet
+                       ? Theme.textWarning : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: 100 } }
+            }
+            MouseArea {
+                id: lockArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Backend.passwordSet ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: if (Backend.passwordSet) Backend.lockVault()
+            }
+        }
+
+        // Compact mode
+        Rectangle {
+            width: 46; height: 36
+            color: compactArea.containsMouse
+                   ? (compactArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
+                   : "transparent"
+            Behavior on color { ColorAnimation { duration: 100 } }
+
+            SvgIcon {
+                source: Backend.isCompact ? Theme.iconExpand : Theme.iconCompress
+                width: Theme.px(12)
+                height: Theme.px(12)
+                anchors.centerIn: parent
+                color: compactArea.containsMouse ? Theme.textPrimary : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: 100 } }
+            }
+            MouseArea {
+                id: compactArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Backend.toggleCompact()
+            }
+        }
+
+        // Minimize
+        Rectangle {
+            width: 46; height: 36
+            color: minimizeArea.containsMouse
+                   ? (minimizeArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
+                   : "transparent"
+            Behavior on color { ColorAnimation { duration: 100 } }
+
+            SvgIcon {
+                source: Theme.iconChevronDown
+                width: Theme.px(12)
+                height: Theme.px(12)
+                anchors.centerIn: parent
+                color: minimizeArea.containsMouse ? Theme.textPrimary : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: 100 } }
+            }
+            MouseArea {
+                id: minimizeArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: window.showMinimized()
+            }
+        }
+
+        // Close
+        Rectangle {
+            width: 46; height: 36
+            color: closeArea.containsMouse
+                   ? (closeArea.pressed ? "#b22a1c" : "#c42b1c")
+                   : "transparent"
+            Behavior on color { ColorAnimation { duration: 100 } }
+
+            SvgIcon {
+                source: Theme.iconPowerOff
+                width: Theme.px(12)
+                height: Theme.px(12)
+                anchors.centerIn: parent
+                color: closeArea.containsMouse ? "#ffffff" : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: 100 } }
+            }
+            MouseArea {
+                id: closeArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: window.close()
+            }
+        }
+    }
+
     // Eight decorative background blobs at z:-1 create subtle depth and visual
     // warmth behind the main UI. Percentage-based x/y positions scale with the
     // window so they redistribute naturally on resize. Three alternating colors
@@ -196,13 +354,14 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.margins: Theme.spacingXL
-            Layout.topMargin: 30
+            Layout.topMargin: 36
             Layout.bottomMargin: 24
             spacing: Theme.spacingLarge
 
-            // Header
+            // Header (hidden in compact mode)
             HeaderBar {
                 Layout.fillWidth: true
+                visible: !Backend.isCompact
                 vaultLoaded: Backend.vaultLoaded
 
                 onLoadClicked: Backend.loadVault()
@@ -210,9 +369,10 @@ ApplicationWindow {
                 onUnloadClicked: Backend.unloadVault()
             }
 
-            // Header separator
+            // Header separator (hidden in compact mode)
             Rectangle {
                 Layout.fillWidth: true
+                visible: !Backend.isCompact
                 implicitHeight: 1
                 color: Theme.divider
             }
@@ -229,9 +389,11 @@ ApplicationWindow {
             AccountsTable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.maximumHeight: Backend.isCompact ? 102 : 16777215
                 model: Backend.vaultModel
                 selectedRow: Backend.selectedIndex
                 searchActive: Backend.searchFilter.length > 0
+                isCompact: Backend.isCompact
                 vaultLoaded: Backend.vaultLoaded
 
                 onRowClicked: function(row) {
@@ -248,6 +410,7 @@ ApplicationWindow {
                 hasSelection: Backend.hasSelection
                 isFillArmed: Backend.isFillArmed
                 fillCountdownSeconds: Backend.fillCountdownSeconds
+                isCompact: Backend.isCompact
 
                 onAddClicked: {
                     accountDlg.dialogTitle = "Add Account";
@@ -297,17 +460,19 @@ ApplicationWindow {
                 }
             }
 
-            // Directory buttons
+            // Directory buttons (hidden in compact mode)
             DirectoryBar {
                 Layout.fillWidth: true
+                visible: !Backend.isCompact
                 onEncryptDirClicked: Backend.encryptDirectory()
                 onDecryptDirClicked: Backend.decryptDirectory()
             }
         }
 
-        // Status footer
+        // Status footer (hidden in compact mode)
         StatusFooter {
             Layout.fillWidth: true
+            visible: !Backend.isCompact
             statusText: Backend.statusText
             fillArmed: Backend.isFillArmed
             vaultFileName: Backend.vaultFileName
@@ -435,6 +600,7 @@ ApplicationWindow {
                         implicitWidth: 110
                         implicitHeight: 34
                         radius: Theme.radiusMedium
+                        clip: true
                         gradient: Gradient {
                             GradientStop { position: 0; color: errorOkButton.pressed ? Theme.btnPressTop : errorOkButton.hovered ? Theme.btnHoverTop : Theme.btnGradTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                             GradientStop { position: 1; color: errorOkButton.pressed ? Theme.btnPressBot : errorOkButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
@@ -527,6 +693,7 @@ ApplicationWindow {
                         implicitWidth: 110
                         implicitHeight: 34
                         radius: Theme.radiusMedium
+                        clip: true
                         gradient: Gradient {
                             GradientStop { position: 0; color: infoOkButton.pressed ? Theme.btnPressTop : infoOkButton.hovered ? Theme.btnHoverTop : Theme.btnGradTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                             GradientStop { position: 1; color: infoOkButton.pressed ? Theme.btnPressBot : infoOkButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }

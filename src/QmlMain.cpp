@@ -15,27 +15,34 @@
 
 #include <algorithm>
 
+// Compute a DPI-aware text scale factor.
+// Baseline: 1920 physical pixels = 1.0 (no scaling).
+// Above 1920px the raw ratio (e.g. 3840/1920 = 2.0 on 4K) would double every
+// dimension. Instead, only 45% of the excess is applied (text-only boost) so
+// text stays readable without blowing up buttons and layout.
+// Clamped to [1.0, 1.5] to avoid under- or over-scaling on extreme displays.
 static qreal computeUiScale()
 {
     QScreen* screen = QGuiApplication::primaryScreen();
     if (!screen)
         return 1.0;
 
-    // Match the existing QWidget baseline: 1920 physical pixels = 1.0 scale.
     const qreal physicalWidth =
         static_cast<qreal>(screen->size().width()) * screen->devicePixelRatio();
     if (physicalWidth <= 1920.0)
-        return 1.0;
+        return 1.0;  // at or below baseline - no scaling needed
 
     const qreal rawScale = physicalWidth / 1920.0;
-    // Text-only boost: increase readability on 4K without resizing the whole layout.
+    // 0.45 factor: only boost text, not the full layout (avoids oversized UI on 4K)
     const qreal textScale = 1.0 + (rawScale - 1.0) * 0.45;
     return std::clamp(textScale, 1.0, 1.5);
 }
 
 int RunQMLMode(int argc, char* argv[])
 {
-    QQuickStyle::setStyle("Basic");  // non-native style so custom theming takes full effect
+    // "Basic" is a non-native Qt Quick Controls style with no platform look-and-feel.
+    // This ensures our custom Theme.qml palette/colors take full effect on all OSes.
+    QQuickStyle::setStyle("Basic");
 
     QGuiApplication app(argc, argv);
     installSealMessageHandler();
@@ -49,7 +56,10 @@ int RunQMLMode(int argc, char* argv[])
 
     seal::Backend backend;
     QQmlApplicationEngine engine;
-    QObject::connect(  // abort on QML load failure instead of showing a blank window
+    // If QML object creation fails (e.g. syntax error in Main.qml), abort
+    // immediately rather than displaying an empty window the user can't interact with.
+    // QueuedConnection ensures the slot runs after the engine finishes its current frame.
+    QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreationFailed,
         &app,

@@ -21,6 +21,7 @@ Rectangle {
     property int selectedRow: -1    // Visual index of the selected row (-1 = none)
     property bool searchActive: false  // True when the search bar has text
     property bool vaultLoaded: false   // Controls which empty-state placeholder shows
+    property bool isCompact: false     // Compact mode: scroll to top and hide scrollbar
 
     signal rowClicked(int row)
 
@@ -150,11 +151,12 @@ Rectangle {
             clip: true
             // No elastic overscroll on desktop.
             boundsBehavior: Flickable.StopAtBounds
+            interactive: !root.isCompact
 
             // Thin floating scrollbar thumb, no track background.
             ScrollBar.vertical: ScrollBar {
                 id: vScrollBar
-                policy: ScrollBar.AsNeeded
+                policy: root.isCompact ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
                 contentItem: Rectangle {
                     implicitWidth: 6
                     radius: 3
@@ -163,6 +165,9 @@ Rectangle {
                 }
                 background: Item {}
             }
+
+            // Snap to top when entering compact mode.
+            onInteractiveChanged: if (!interactive) positionViewAtBeginning()
 
             // Each delegate receives `selected` from the parent's binding; clicking
             // a row emits rowClicked(index) which Main.qml handles with toggle logic
