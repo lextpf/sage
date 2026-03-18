@@ -38,6 +38,8 @@ static void sealMessageHandler(QtMsgType type, const QMessageLogContext& ctx, co
         case QtFatalMsg:
             lvl = "FTL";
             break;
+        default:
+            break;
     }
 
     const QString timestamp = QDateTime::currentDateTime().toString("HH:mm:ss.zzz");

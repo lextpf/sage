@@ -34,7 +34,7 @@ std::string FileOperations::tripleToUtf8(const seal::secure_triplet16_t& t)
     return out;
 }
 
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::encryptFileInPlace(const std::string& path, const SecurePwd& pwd)
 {
     std::ifstream in(path, std::ios::binary);
@@ -80,7 +80,7 @@ bool FileOperations::encryptFileInPlace(const std::string& path, const SecurePwd
     return true;
 }
 
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::decryptFileInPlace(const std::string& path, const SecurePwd& pwd)
 {
     std::ifstream in(path, std::ios::binary);
@@ -138,7 +138,7 @@ bool FileOperations::decryptFileInPlace(const std::string& path, const SecurePwd
 // Encrypt a single plaintext string and return it as a hex-encoded string.
 // The round-trip is: plaintext bytes -> encrypt -> raw ciphertext -> hex.
 // Hex encoding makes the ciphertext safe to paste into terminals, logs, etc.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 std::string FileOperations::encryptLine(const std::string& s, const SecurePwd& pwd)
 {
     auto packet = seal::Cryptography::encryptPacket(
@@ -149,7 +149,7 @@ std::string FileOperations::encryptLine(const std::string& s, const SecurePwd& p
 
 // Reverse of encryptLine: hex string -> raw ciphertext bytes -> decrypt -> plaintext.
 // Spaces are stripped first so the user can paste hex with whitespace formatting.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 seal::secure_string<seal::locked_allocator<char>> FileOperations::decryptLine(
     const std::string& rawHex, const SecurePwd& pwd)
 {
@@ -244,7 +244,7 @@ bool FileOperations::parseTriples(std::string_view plain,
 // Walk a directory with FindFirstFileA/FindNextFileA, encrypting or
 // decrypting every file based on its .seal extension (see processFilePath).
 // Subdirectories are processed recursively via std::async.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::processDirectory(const std::string& dir,
                                       const SecurePwd& password,
                                       bool recurse)
@@ -338,7 +338,7 @@ bool FileOperations::processDirectory(const std::string& dir,
 // Files ending in ".seal" are decrypted (extension removed); all others are
 // encrypted (extension appended). This toggle means running the same command
 // twice round-trips a file back to its original state.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& password)
 {
     std::string t = seal::utils::stripQuotes(seal::utils::trim(raw));
@@ -418,7 +418,7 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
 // they are aggregated into aggTriples for structured display. Otherwise the
 // plaintext is treated as opaque data: copied to the clipboard (with a TTL)
 // and collected in otherPlain for raw output.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 static void decryptHexTokens(const std::vector<std::string>& hexTokens,
                              const SecurePwd& password,
                              std::vector<seal::secure_triplet16_t>& aggTriples,
@@ -471,7 +471,13 @@ static void displayTriples(std::vector<seal::secure_triplet16_t>& aggTriples, bo
             oss << sv;
             seal::Cryptography::cleanseString(sv);
         }
-        std::cout << oss.str() << "\n";
+        std::string printed = oss.str();
+        std::cout << printed << "\n";
+        seal::Cryptography::cleanseString(printed);
+        // Wipe the ostringstream's internal buffer so plaintext does not
+        // linger on the heap after display.
+        std::string ossBuf = std::move(oss).str();
+        seal::Cryptography::cleanseString(ossBuf);
     }
     else
     {
@@ -492,7 +498,7 @@ static void displayTriples(std::vector<seal::secure_triplet16_t>& aggTriples, bo
 //   3. Plain text -- anything else is encrypted and printed as hex.
 // This priority order means a line that happens to look like valid hex but
 // also resolves to a real file path will be treated as a file path.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 void FileOperations::processBatch(const std::vector<std::string>& lines,
                                   bool uncensored,
                                   const SecurePwd& password)
@@ -552,7 +558,7 @@ void FileOperations::processBatch(const std::vector<std::string>& lines,
 // Designed for shell pipe integration, e.g.: cat secret | seal --encrypt | ...
 // stdin/stdout must be in binary mode (set by the caller) so that Windows
 // CRLF translation does not corrupt the ciphertext byte stream.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::streamEncrypt(const SecurePwd& password)
 {
     try
@@ -594,7 +600,7 @@ bool FileOperations::streamEncrypt(const SecurePwd& password)
 // write plaintext to stdout. Used for shell pipe decryption, e.g.:
 //   cat secret.seal | seal --decrypt > secret.txt
 // Same binary-mode requirement as streamEncrypt.
-template <class SecurePwd>
+template <secure_password SecurePwd>
 bool FileOperations::streamDecrypt(const SecurePwd& password)
 {
     try
@@ -634,33 +640,46 @@ bool FileOperations::streamDecrypt(const SecurePwd& password)
 
 bool FileOperations::shredFile(const std::string& path)
 {
-    // Get file size
-    std::ifstream probe(path, std::ios::binary | std::ios::ate);
-    if (!probe)
+    // Open with FILE_FLAG_WRITE_THROUGH to bypass the filesystem write cache
+    // and push data directly to the storage controller. This gives a stronger
+    // (though still not absolute) guarantee that overwrite passes hit the same
+    // physical sectors as the original data. On SSDs with wear-leveling or
+    // copy-on-write filesystems (e.g. ReFS), the controller may remap sectors
+    // regardless -- full disk encryption is the only complete mitigation there.
+    HANDLE hFile = CreateFileA(path.c_str(),
+                               GENERIC_READ | GENERIC_WRITE,
+                               0,
+                               nullptr,
+                               OPEN_EXISTING,
+                               FILE_FLAG_WRITE_THROUGH,
+                               nullptr);
+    if (hFile == INVALID_HANDLE_VALUE)
     {
         std::cerr << "(shred) cannot open: " << path << "\n";
         return false;
     }
-    auto size = probe.tellg();
-    probe.close();
 
-    if (size <= 0)
+    LARGE_INTEGER liSize{};
+    if (!GetFileSizeEx(hFile, &liSize) || liSize.QuadPart <= 0)
     {
-        // Empty file - just delete it
+        CloseHandle(hFile);
+        // Empty or unreadable file - just delete it.
         return DeleteFileA(path.c_str()) != 0;
     }
 
-    auto fileSize = static_cast<size_t>(size);
+    auto fileSize = static_cast<size_t>(liSize.QuadPart);
     constexpr size_t CHUNK = 65536;
     std::vector<unsigned char> buf(std::min(fileSize, CHUNK));
 
-    // Three overwrite passes: random, zeros, random
+    // Three overwrite passes: random, zeros, random.
     for (int pass = 0; pass < 3; ++pass)
     {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
+        // Rewind to the start for each pass.
+        LARGE_INTEGER zero{};
+        if (!SetFilePointerEx(hFile, zero, nullptr, FILE_BEGIN))
         {
-            std::cerr << "(shred) cannot write pass " << (pass + 1) << ": " << path << "\n";
+            std::cerr << "(shred) seek failed pass " << (pass + 1) << ": " << path << "\n";
+            CloseHandle(hFile);
             return false;
         }
 
@@ -669,18 +688,28 @@ bool FileOperations::shredFile(const std::string& path)
         {
             size_t chunk = std::min(remaining, buf.size());
             if (pass == 1)
+            {
                 std::fill_n(buf.data(), chunk, static_cast<unsigned char>(0));
+            }
             else
+            {
                 RAND_bytes(buf.data(), static_cast<int>(chunk));
+            }
 
-            out.write(reinterpret_cast<const char*>(buf.data()),
-                      static_cast<std::streamsize>(chunk));
+            DWORD written = 0;
+            if (!WriteFile(hFile, buf.data(), static_cast<DWORD>(chunk), &written, nullptr) ||
+                written != static_cast<DWORD>(chunk))
+            {
+                std::cerr << "(shred) write failed pass " << (pass + 1) << ": " << path << "\n";
+                CloseHandle(hFile);
+                return false;
+            }
             remaining -= chunk;
         }
-        out.flush();
-        out.close();
+        FlushFileBuffers(hFile);
     }
 
+    CloseHandle(hFile);
     SecureZeroMemory(buf.data(), buf.size());
 
     if (!DeleteFileA(path.c_str()))
@@ -700,29 +729,24 @@ std::string FileOperations::hashFile(const std::string& path)
         return {};
     }
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx)
+    seal::EvpMdCtx ctx;
+    if (EVP_DigestInit_ex(ctx.p, EVP_sha256(), nullptr) != 1)
         return {};
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1)
-    {
-        EVP_MD_CTX_free(ctx);
-        return {};
-    }
 
     constexpr size_t CHUNK = 65536;
     char buf[CHUNK];
     while (in.read(buf, CHUNK) || in.gcount() > 0)
     {
-        EVP_DigestUpdate(ctx, buf, static_cast<size_t>(in.gcount()));
+        if (EVP_DigestUpdate(ctx.p, buf, static_cast<size_t>(in.gcount())) != 1)
+            return {};
         if (in.eof())
             break;
     }
 
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int hashLen = 0;
-    EVP_DigestFinal_ex(ctx, hash, &hashLen);
-    EVP_MD_CTX_free(ctx);
+    if (EVP_DigestFinal_ex(ctx.p, hash, &hashLen) != 1)
+        return {};
 
     return seal::utils::to_hex(std::span<const unsigned char>(hash, hashLen));
 }

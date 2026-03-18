@@ -18,24 +18,28 @@
 // Compute a DPI-aware text scale factor.
 // Baseline: 1920 physical pixels = 1.0 (no scaling).
 // Above 1920px the raw ratio (e.g. 3840/1920 = 2.0 on 4K) would double every
-// dimension. Instead, only 45% of the excess is applied (text-only boost) so
-// text stays readable without blowing up buttons and layout.
-// Clamped to [1.0, 1.5] to avoid under- or over-scaling on extreme displays.
+// dimension. Instead, only a fraction of the excess is applied (text-only
+// boost) so text stays readable without blowing up buttons and layout.
+// Clamped to [kMinScale, kMaxScale] to avoid under-/over-scaling on extreme displays.
 static qreal computeUiScale()
 {
+    static constexpr qreal kBaselineWidth = 1920.0;
+    static constexpr qreal kTextBoostFactor = 0.45;
+    static constexpr qreal kMinScale = 1.0;
+    static constexpr qreal kMaxScale = 1.5;
+
     QScreen* screen = QGuiApplication::primaryScreen();
     if (!screen)
-        return 1.0;
+        return kMinScale;
 
     const qreal physicalWidth =
         static_cast<qreal>(screen->size().width()) * screen->devicePixelRatio();
-    if (physicalWidth <= 1920.0)
-        return 1.0;  // at or below baseline - no scaling needed
+    if (physicalWidth <= kBaselineWidth)
+        return kMinScale;
 
-    const qreal rawScale = physicalWidth / 1920.0;
-    // 0.45 factor: only boost text, not the full layout (avoids oversized UI on 4K)
-    const qreal textScale = 1.0 + (rawScale - 1.0) * 0.45;
-    return std::clamp(textScale, 1.0, 1.5);
+    const qreal rawScale = physicalWidth / kBaselineWidth;
+    const qreal textScale = 1.0 + (rawScale - 1.0) * kTextBoostFactor;
+    return std::clamp(textScale, kMinScale, kMaxScale);
 }
 
 int RunQMLMode(int argc, char* argv[])

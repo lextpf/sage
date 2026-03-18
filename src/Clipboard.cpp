@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace
@@ -38,6 +39,11 @@ struct ClipboardLock
 // static destruction, guaranteeing the thread is joined before the process
 // exits. Assigning a new jthread auto-joins the previous one.
 std::jthread s_TtlThread;
+
+// Serializes access to s_TtlThread. Without this, concurrent copyWithTTL
+// calls race on the jthread assignment (one thread may be mid-join while
+// another writes a new jthread value, causing undefined behavior).
+std::mutex s_TtlMutex;
 
 }  // namespace
 
@@ -118,6 +124,9 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
     // Joinable TTL thread: sleeps for the TTL in short increments (so it
     // can respond to stop_requested during static destruction), then checks
     // whether the clipboard still holds our value before clearing.
+    // The lock serializes concurrent copyWithTTL calls so the jthread
+    // assignment (which joins the previous thread) is not a data race.
+    std::lock_guard<std::mutex> ttlLock(s_TtlMutex);
     s_TtlThread = std::jthread(
         [val = std::move(val), ttl_ms](std::stop_token stop) mutable
         {

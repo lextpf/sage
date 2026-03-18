@@ -680,8 +680,11 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     if (!m_PasswordSet)
     {
-        m_PendingAction = [this, service, username, password]()
-        { addAccount(service, username, password); };
+        // Capture only the non-sensitive service name. Re-showing the add
+        // dialog avoids holding the plaintext username/password in pageable
+        // heap memory inside the std::function while waiting for the master
+        // password. The user re-enters credentials after unlocking.
+        m_PendingAction = [this, service]() { emit addAccountRetryRequired(service); };
         ensurePassword();
         return;
     }
@@ -721,8 +724,16 @@ void Backend::editAccount(int index,
 
     if (!m_PasswordSet)
     {
-        m_PendingAction = [this, index, service, username, password]()
-        { editAccount(index, service, username, password); };
+        // Capture only the index (not username/password) to avoid holding
+        // plaintext credentials in pageable heap memory. After the master
+        // password is entered, re-decrypt and re-show the edit dialog so
+        // the user can re-enter their changes.
+        m_PendingAction = [this, index]()
+        {
+            QVariantMap data = decryptAccountForEdit(index);
+            if (!data.isEmpty())
+                emit editAccountReady(data);
+        };
         ensurePassword();
         return;
     }
@@ -864,8 +875,14 @@ static void doTypeLogin(
     {
         cred = seal::decryptCredentialOnDemand(records[index], masterPw);
     }
+    catch (const std::exception& e)
+    {
+        qCWarning(logBackend) << "doTypeLogin: decrypt failed:" << e.what();
+        return;
+    }
     catch (...)
     {
+        qCWarning(logBackend) << "doTypeLogin: decrypt failed (unknown error)";
         return;
     }
 
@@ -913,8 +930,14 @@ static void doTypePassword(
     {
         cred = seal::decryptCredentialOnDemand(records[index], masterPw);
     }
+    catch (const std::exception& e)
+    {
+        qCWarning(logBackend) << "doTypePassword: decrypt failed:" << e.what();
+        return;
+    }
     catch (...)
     {
+        qCWarning(logBackend) << "doTypePassword: decrypt failed (unknown error)";
         return;
     }
 

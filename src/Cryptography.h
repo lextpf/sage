@@ -79,21 +79,43 @@ static constexpr uint64_t SCRYPT_R = 8;  ///< scrypt block size parameter.
 static constexpr uint64_t SCRYPT_P = 1;  ///< scrypt parallelisation parameter.
 static constexpr uint64_t SCRYPT_MAXMEM =
     128ULL * 1024 * 1024;  ///< scrypt maximum memory allowance (128 MiB, ~2x working set).
+
+/// @brief Compile-time validation of cryptographic configuration invariants.
+consteval bool validate()
+{
+    static_assert(SALT_LEN >= 16, "salt must be at least 16 bytes (NIST SP 800-132)");
+    static_assert(KEY_LEN == 32, "AES-256 requires a 32-byte key");
+    static_assert(IV_LEN == 12, "AES-GCM requires a 12-byte IV (NIST SP 800-38D)");
+    static_assert(TAG_LEN == 16, "GCM tag must be 16 bytes for full authentication strength");
+    static_assert(SCRYPT_N > 0 && (SCRYPT_N & (SCRYPT_N - 1)) == 0,
+                  "scrypt N must be a power of 2");
+    static_assert(SCRYPT_R >= 1, "scrypt r must be at least 1");
+    static_assert(SCRYPT_P >= 1, "scrypt p must be at least 1");
+    static_assert(SCRYPT_MAXMEM >= 128ULL * SCRYPT_R * SCRYPT_N,
+                  "scrypt MAXMEM must cover the working set (128 * r * N)");
+    return true;
+}
+inline constexpr bool kConfigValid = validate();
 }  // namespace cfg
 
 /// @brief Concept for byte-addressable element types.
 template <class T>
 concept byte_like =
     std::same_as<std::remove_cv_t<T>, unsigned char> || std::same_as<std::remove_cv_t<T>, char> ||
-#if __cplusplus >= 201703L
     std::same_as<std::remove_cv_t<T>, std::byte>;
-#else
-    false;
-#endif
+
+/// @brief Concept for secure password containers (e.g. basic_secure_string).
+/// @details Requires a `.s` member with `.data()` and `.size()` (the locked vector).
+template <class T>
+concept secure_password = requires(const T& pwd) {
+    { pwd.s.data() };
+    { pwd.s.size() } -> std::convertible_to<std::size_t>;
+};
 
 /// @brief Round up to the next multiple of an alignment.
-static inline size_t align_up(size_t v, size_t a)
+static constexpr size_t align_up(size_t v, size_t a)
 {
+    assert(a > 0);
     return (v + (a - 1)) & ~(a - 1);
 }
 
@@ -214,9 +236,20 @@ struct locked_allocator
         // The header is page-aligned so VirtualProtect can change payload
         // protection without affecting the header.
         SIZE_T headerSize = align_up(sizeof(locked_header), page);
+
+        // Guard against overflow in the intermediate sums. Each addition
+        // could wrap when needBytes is near SIZE_MAX.
+        if (needBytes > SIZE_MAX - headerSize - kCanaryBytes)
+        {
+            throw std::bad_alloc();
+        }
         SIZE_T afterHeader = headerSize + needBytes + kCanaryBytes;
         SIZE_T middleNeed = align_up(afterHeader, page);  // round up to full pages
-        SIZE_T total = middleNeed + 2 * page;             // add front + back guard pages
+        if (middleNeed < afterHeader || middleNeed > SIZE_MAX - 2 * page)
+        {
+            throw std::bad_alloc();
+        }
+        SIZE_T total = middleNeed + 2 * page;  // add front + back guard pages
 
         // Reserve the entire region as PAGE_NOACCESS - the two guard pages at
         // each end stay NOACCESS permanently to trap out-of-bounds access.
@@ -364,11 +397,6 @@ inline bool operator==(const locked_allocator<T>&, const locked_allocator<U>&)
 {
     return true;
 }
-template <class T, class U>
-inline bool operator!=(const locked_allocator<T>&, const locked_allocator<U>&)
-{
-    return false;
-}
 
 /// @brief Switch the payload protection to PAGE_NOACCESS.
 /// @pre @p p was returned by locked_allocator::allocate() (or is null).
@@ -405,132 +433,10 @@ inline void protect_readwrite(const T* p)
  * physical RAM and bordered by PAGE_NOACCESS guard pages. Copy is
  * deleted; only move semantics are supported.
  *
- * @tparam A Allocator type (default: locked_allocator\<char\>).
- *
- * @see locked_allocator, protect_noaccess, protect_readwrite
- */
-template <class A = locked_allocator<char>>
-struct secure_string
-{
-    std::vector<char, A> s;
-
-    secure_string() = default;
-    secure_string(const secure_string&) = delete;
-    secure_string& operator=(const secure_string&) = delete;
-    secure_string(secure_string&& o) noexcept
-        : s(std::move(o.s))
-    {
-    }
-    secure_string& operator=(secure_string&& o) noexcept
-    {
-        if (this != &o)
-        {
-            clear();
-            s = std::move(o.s);
-        }
-        return *this;
-    }
-    ~secure_string() { clear(); }
-
-    /// @brief Append a character to the string.
-    void push_back(char c) { s.push_back(c); }
-
-    /// @brief Remove the last character (no-op if empty).
-    void pop_back()
-    {
-        if (!s.empty())
-            s.pop_back();
-    }
-
-    /// @brief Check whether the string is empty.
-    bool empty() const { return s.empty(); }
-
-    /// @brief Return the number of characters stored.
-    size_t size() const { return s.size(); }
-
-    /// @brief Return a mutable pointer to the underlying buffer.
-    char* data() { return s.data(); }
-
-    /// @brief Return a const pointer to the underlying buffer.
-    const char* data() const { return s.data(); }
-
-    /// @brief Return a non-owning string_view over the contents.
-    std::string_view view() const noexcept { return {s.data(), s.size()}; }
-
-    /**
-     * @brief Return a null-terminated C string.
-     *
-     * Appends a null terminator if one is not already present.
-     * This may reallocate the underlying buffer.
-     *
-     * @return Pointer to the null-terminated data.
-     */
-    const char* c_str()
-    {
-        if (s.empty() || s.back() != '\0')
-        {
-            if (s.size() == s.capacity())
-                s.reserve(s.size() + 1);
-            s.push_back('\0');
-        }
-        return s.data();
-    }
-
-    /**
-     * @brief Securely wipe and release all memory.
-     *
-     * Restores PAGE_READWRITE if needed, zeroes the buffer with
-     * `SecureZeroMemory`, then releases the guarded allocation.
-     */
-    void clear()
-    {
-        if (!s.empty())
-        {
-            // The buffer may be PAGE_NOACCESS (e.g. after protect_noaccess).
-            // Restore RW so SecureZeroMemory can reach the bytes.
-            seal::protect_readwrite(s.data());
-            SecureZeroMemory(s.data(), s.size());
-            // clear() sets logical size to 0; swap with a temporary releases
-            // the allocation back to the locked_allocator (which wipes + frees).
-            s.clear();
-            std::vector<char, A>().swap(s);
-        }
-        else
-        {
-            // The vector may be empty (size == 0) but still hold a live
-            // allocation with capacity > 0.  That buffer is guarded memory
-            // that must be freed, not leaked.
-            if (s.capacity() > 0 && s.data())
-            {
-                seal::protect_readwrite(s.data());
-                s.clear();
-                std::vector<char, A>().swap(s);
-            }
-        }
-    }
-
-    /**
-     * @brief Copy contents into a regular std::string.
-     * @return A heap-allocated copy in pageable memory.
-     * @warning The returned string is **not** in locked memory and may be
-     *          swapped to disk. Use only when an insecure copy is acceptable.
-     */
-    std::string str_copy() const { return std::string(s.data(), s.data() + s.size()); }
-};
-
-/**
- * @brief Move-only secure string for arbitrary wide code unit types.
- * @author Alex (https://github.com/lextpf)
- * @ingroup Crypto
- *
- * Generalisation of secure_string for `wchar_t`, `char16_t`, etc.
- * All data lives in locked, guard-paged memory. Copy is deleted;
- * only move semantics are supported.
- *
- * @tparam CharT Character type (e.g. `wchar_t`, `char16_t`).
+ * @tparam CharT Character type (e.g. `char`, `wchar_t`, `char16_t`).
  * @tparam A     Allocator type (default: locked_allocator\<CharT\>).
  *
- * @see secure_string, locked_allocator
+ * @see locked_allocator, protect_noaccess, protect_readwrite
  */
 template <class CharT, class A = locked_allocator<CharT>>
 struct basic_secure_string
@@ -571,11 +477,12 @@ struct basic_secure_string
     /// @brief Return the number of code units stored.
     size_t size() const { return s.size(); }
 
-    /// @brief Return a mutable pointer to the underlying buffer.
-    CharT* data() { return s.data(); }
-
-    /// @brief Return a const pointer to the underlying buffer.
-    const CharT* data() const { return s.data(); }
+    /// @brief Return a pointer to the underlying buffer (const-propagating).
+    template <class Self>
+    auto data(this Self&& self)
+    {
+        return std::forward<Self>(self).s.data();
+    }
 
     /// @brief Return a non-owning string_view over the contents.
     std::basic_string_view<CharT> view() const noexcept { return {s.data(), s.size()}; }
@@ -640,6 +547,12 @@ struct basic_secure_string
         return std::basic_string<CharT>(s.data(), s.data() + s.size());
     }
 };
+
+/// @brief Narrow-character secure string; alias for basic_secure_string\<char, A\>.
+/// @tparam A Allocator type (default: locked_allocator\<char\>).
+/// @see basic_secure_string
+template <class A = locked_allocator<char>>
+using secure_string = basic_secure_string<char, A>;
 
 /**
  * @struct RWGuard
@@ -859,7 +772,7 @@ struct scoped_console
 };
 
 /**
- * @struct EVP_CTX
+ * @struct EvpCipherCtx
  * @brief RAII owner for an OpenSSL EVP_CIPHER_CTX.
  * @ingroup Crypto
  *
@@ -868,22 +781,62 @@ struct scoped_console
  *
  * @throw std::runtime_error if EVP_CIPHER_CTX_new() fails.
  */
-struct EVP_CTX
+struct EvpCipherCtx
 {
     EVP_CIPHER_CTX* p{nullptr};
-    EVP_CTX()
+    EvpCipherCtx()
         : p(EVP_CIPHER_CTX_new())
     {
         if (!p)
+        {
             throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+        }
     }
-    ~EVP_CTX()
+    ~EvpCipherCtx()
     {
         if (p)
+        {
             EVP_CIPHER_CTX_free(p);
+        }
     }
-    EVP_CTX(const EVP_CTX&) = delete;
-    EVP_CTX& operator=(const EVP_CTX&) = delete;
+    EvpCipherCtx(const EvpCipherCtx&) = delete;
+    EvpCipherCtx& operator=(const EvpCipherCtx&) = delete;
+    EvpCipherCtx(EvpCipherCtx&&) = delete;
+    EvpCipherCtx& operator=(EvpCipherCtx&&) = delete;
+};
+
+/**
+ * @struct EvpMdCtx
+ * @brief RAII owner for an OpenSSL EVP_MD_CTX.
+ * @ingroup Crypto
+ *
+ * Allocates a digest context on construction and frees it on
+ * destruction. Non-copyable.
+ *
+ * @throw std::runtime_error if EVP_MD_CTX_new() fails.
+ */
+struct EvpMdCtx
+{
+    EVP_MD_CTX* p{nullptr};
+    EvpMdCtx()
+        : p(EVP_MD_CTX_new())
+    {
+        if (!p)
+        {
+            throw std::runtime_error("EVP_MD_CTX_new failed");
+        }
+    }
+    ~EvpMdCtx()
+    {
+        if (p)
+        {
+            EVP_MD_CTX_free(p);
+        }
+    }
+    EvpMdCtx(const EvpMdCtx&) = delete;
+    EvpMdCtx& operator=(const EvpMdCtx&) = delete;
+    EvpMdCtx(EvpMdCtx&&) = delete;
+    EvpMdCtx& operator=(EvpMdCtx&&) = delete;
 };
 
 /**
@@ -943,12 +896,6 @@ public:
         return ctEqualRaw(reinterpret_cast<const unsigned char*>(std::ranges::data(aa)),
                           reinterpret_cast<const unsigned char*>(std::ranges::data(bb)),
                           std::ranges::size(aa));
-    }
-
-    template <class A>
-    static bool ctEqual(const secure_string<A>& a, const secure_string<A>& b)
-    {
-        return ctEqualAny(a.s, b.s);
     }
 
     template <class CharT, class A>
@@ -1034,7 +981,7 @@ public:
      * @return The framed encrypted packet.
      * @throw std::runtime_error on OpenSSL failure.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     [[nodiscard]] static std::vector<unsigned char> encryptPacket(
         std::span<const unsigned char> plaintext, const SecurePwd& password);
 
@@ -1047,7 +994,7 @@ public:
      * @return Decrypted plaintext bytes.
      * @throw std::runtime_error on authentication failure or malformed packet.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     [[nodiscard]] static std::vector<unsigned char> decryptPacket(
         std::span<const unsigned char> packet, const SecurePwd& password);
 
@@ -1058,10 +1005,13 @@ private:
     /// @brief Get authenticated AAD span.
     static std::span<const unsigned char> aadSpan() noexcept;
 
-    /// @brief Derive AES-256 key via scrypt.
-    template <class SecurePwd>
-    [[nodiscard]] static std::vector<unsigned char> deriveKey(const SecurePwd& pwd,
-                                                              std::span<const unsigned char> salt);
+    /// @brief Derived key type backed by guard-paged, locked memory.
+    using LockedKeyBuffer = std::vector<unsigned char, locked_allocator<unsigned char>>;
+
+    /// @brief Derive AES-256 key via scrypt into locked memory.
+    template <secure_password SecurePwd>
+    [[nodiscard]] static LockedKeyBuffer deriveKey(const SecurePwd& pwd,
+                                                   std::span<const unsigned char> salt);
 
     template <class CharT, class Traits, class Alloc>
     static void cleanseOne(std::basic_string<CharT, Traits, Alloc>& s) noexcept
@@ -1072,25 +1022,6 @@ private:
         }
         s.clear();
         s.shrink_to_fit();
-    }
-
-    template <class A>
-    static void cleanseOne(seal::secure_string<A>& s) noexcept
-    {
-        if (!s.s.empty())
-        {
-            char* base = s.s.data();
-            if (base)
-            {
-                auto* hdr = seal::header_from_payload(base);
-                DWORD oldProt{}, dummy{};
-                (void)VirtualProtect(base, hdr->payloadSpan, PAGE_READWRITE, &oldProt);
-                SecureZeroMemory(base, hdr->usable);
-                (void)VirtualProtect(base, hdr->payloadSpan, oldProt, &dummy);
-            }
-        }
-        s.s.clear();
-        std::vector<char, A>().swap(s.s);
     }
 
     template <class CharT, class A>
@@ -1124,9 +1055,9 @@ private:
     }
 
     template <class CharT>
+        requires std::is_trivial_v<CharT>
     static void cleanseOne(CharT* p, size_t len) noexcept
     {
-        static_assert(std::is_trivial_v<CharT>, "CharT must be trivial");
         OPENSSL_cleanse(static_cast<void*>(p), len * sizeof(CharT));
     }
 
@@ -1139,35 +1070,6 @@ private:
         cleanseOne(p, n);
     }
 };
-
-/**
- * @brief Move-only holder for three narrow secure strings (service, username, password).
- * @author Alex (https://github.com/lextpf)
- * @ingroup Crypto
- * @tparam A Locked allocator type (default: locked_allocator\<char\>).
- */
-template <class A = seal::locked_allocator<char>>
-struct secure_triplet
-{
-    seal::secure_string<A> service;  ///< Service / platform name.
-    seal::secure_string<A> user;     ///< Username or email.
-    seal::secure_string<A> pass;     ///< Password.
-
-    secure_triplet(seal::secure_string<A>&& s,
-                   seal::secure_string<A>&& u,
-                   seal::secure_string<A>&& p) noexcept
-        : service(std::move(s)),
-          user(std::move(u)),
-          pass(std::move(p))
-    {
-    }
-
-    secure_triplet(secure_triplet&&) noexcept = default;
-    secure_triplet& operator=(secure_triplet&&) noexcept = default;
-    secure_triplet(const secure_triplet&) = delete;
-    secure_triplet& operator=(const secure_triplet&) = delete;
-};
-using secure_triplet_t = secure_triplet<>;
 
 /**
  * @brief Move-only holder for three wide secure strings with tuple-like access.
@@ -1204,30 +1106,18 @@ struct secure_triplet16
     static constexpr std::size_t size() noexcept { return 3; }
 
     /// @brief Unchecked element access (0=service, 1=username, 2=password).
-    string_type& operator[](std::size_t i) noexcept
+    template <class Self>
+    auto&& operator[](this Self&& self, std::size_t i) noexcept
     {
         assert(i < 3);
         switch (i)
         {
             case 0:
-                return primary;
+                return std::forward<Self>(self).primary;
             case 1:
-                return secondary;
+                return std::forward<Self>(self).secondary;
             default:
-                return tertiary;
-        }
-    }
-    const string_type& operator[](std::size_t i) const noexcept
-    {
-        assert(i < 3);
-        switch (i)
-        {
-            case 0:
-                return primary;
-            case 1:
-                return secondary;
-            default:
-                return tertiary;
+                return std::forward<Self>(self).tertiary;
         }
     }
 
@@ -1236,74 +1126,55 @@ struct secure_triplet16
      * @param i Index (0-2).
      * @throw std::out_of_range if @p i >= 3.
      */
-    string_type& at(std::size_t i)
+    template <class Self>
+    auto&& at(this Self&& self, std::size_t i)
     {
         if (i >= 3)
             throw std::out_of_range("secure_triplet::at");
-        return (*this)[i];
-    }
-    const string_type& at(std::size_t i) const
-    {
-        if (i >= 3)
-            throw std::out_of_range("secure_triplet::at");
-        return (*this)[i];
+        return std::forward<Self>(self)[i];
     }
 
     /// @brief Named accessors (aliases for primary/secondary/tertiary).
-    string_type& first() noexcept { return primary; }
-    string_type& second() noexcept { return secondary; }
-    string_type& third() noexcept { return tertiary; }
-
-    const string_type& first() const noexcept { return primary; }
-    const string_type& second() const noexcept { return secondary; }
-    const string_type& third() const noexcept { return tertiary; }
+    template <class Self>
+    auto&& first(this Self&& self) noexcept
+    {
+        return std::forward<Self>(self).primary;
+    }
+    template <class Self>
+    auto&& second(this Self&& self) noexcept
+    {
+        return std::forward<Self>(self).secondary;
+    }
+    template <class Self>
+    auto&& third(this Self&& self) noexcept
+    {
+        return std::forward<Self>(self).tertiary;
+    }
 
     /// @brief Tuple-like access for structured bindings (`auto& [s, u, p] = triplet`).
-    template <std::size_t I>
-    decltype(auto) get() & noexcept
+    template <std::size_t I, class Self>
+    decltype(auto) get(this Self&& self) noexcept
     {
         static_assert(I < 3, "secure_triplet index out of range");
         if constexpr (I == 0)
-            return (primary);
+            return std::forward<Self>(self).primary;
         else if constexpr (I == 1)
-            return (secondary);
+            return std::forward<Self>(self).secondary;
         else
-            return (tertiary);
-    }
-    template <std::size_t I>
-    decltype(auto) get() const& noexcept
-    {
-        static_assert(I < 3, "secure_triplet index out of range");
-        if constexpr (I == 0)
-            return (primary);
-        else if constexpr (I == 1)
-            return (secondary);
-        else
-            return (tertiary);
-    }
-    template <std::size_t I>
-    decltype(auto) get() && noexcept
-    {
-        static_assert(I < 3, "secure_triplet index out of range");
-        if constexpr (I == 0)
-            return (primary);
-        else if constexpr (I == 1)
-            return (secondary);
-        else
-            return (tertiary);
-    }
-    template <std::size_t I>
-    decltype(auto) get() const&& noexcept
-    {
-        static_assert(I < 3, "secure_triplet index out of range");
-        if constexpr (I == 0)
-            return (primary);
-        else if constexpr (I == 1)
-            return (secondary);
-        else
-            return (tertiary);
+            return std::forward<Self>(self).tertiary;
     }
 };
 using secure_triplet16_t = secure_triplet16<>;
 
 }  // namespace seal
+
+/// @brief Structured binding support for secure_triplet16.
+template <class A>
+struct std::tuple_size<seal::secure_triplet16<A>> : std::integral_constant<std::size_t, 3>
+{
+};
+template <std::size_t I, class A>
+struct std::tuple_element<I, seal::secure_triplet16<A>>
+{
+    using type = typename seal::secure_triplet16<A>::string_type;
+};

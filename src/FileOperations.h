@@ -73,7 +73,7 @@ public:
      * @param pwd  Master password for key derivation.
      * @return `true` on success, `false` if the file cannot be opened/written.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool encryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
@@ -88,7 +88,7 @@ public:
      * @param pwd  Master password for key derivation.
      * @return `true` on success, `false` on I/O or authentication error.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool decryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
@@ -99,7 +99,7 @@ public:
      * @param pwd Master password for key derivation.
      * @return Hex-encoded encrypted packet.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     [[nodiscard]] static std::string encryptLine(const std::string& s, const SecurePwd& pwd);
 
     /**
@@ -114,7 +114,7 @@ public:
      *
      * @throw std::runtime_error on invalid hex or authentication failure.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     [[nodiscard]] static seal::secure_string<seal::locked_allocator<char>> decryptLine(
         const std::string& rawHex, const SecurePwd& pwd);
 
@@ -168,7 +168,7 @@ public:
      * @param recurse  Recurse into subdirectories when `true`.
      * @return `true` if all processed files succeeded.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool processDirectory(const std::string& dir,
                                  const SecurePwd& password,
                                  bool recurse = true);
@@ -186,7 +186,7 @@ public:
      * @param password Master password for key derivation.
      * @return `true` if the path was recognized and processed successfully.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool processFilePath(const std::string& raw, const SecurePwd& password);
 
     /**
@@ -208,7 +208,7 @@ public:
      * @param uncensored Print plaintext when `true`, mask when `false`.
      * @param password   Master password for key derivation.
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static void processBatch(const std::vector<std::string>& lines,
                              bool uncensored,
                              const SecurePwd& password);
@@ -224,7 +224,7 @@ public:
      * @param password Master password for key derivation.
      * @return `true` on success, `false` on error (errors go to stderr).
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool streamEncrypt(const SecurePwd& password);
 
     /**
@@ -238,7 +238,7 @@ public:
      * @param password Master password for key derivation.
      * @return `true` on success, `false` on error (errors go to stderr).
      */
-    template <class SecurePwd>
+    template <secure_password SecurePwd>
     static bool streamDecrypt(const SecurePwd& password);
 
     /**

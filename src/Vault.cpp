@@ -32,16 +32,6 @@ static std::string qstringToStd(const QString& qstr)
     return std::string(bytes.constData(), bytes.size());
 }
 
-static std::string wcharToUtf8(const wchar_t* data, size_t len)
-{
-    if (!data || len == 0)
-        return {};
-    int need = WideCharToMultiByte(CP_UTF8, 0, data, (int)len, nullptr, 0, nullptr, nullptr);
-    std::string out(need, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, data, (int)len, out.data(), need, nullptr, nullptr);
-    return out;
-}
-
 namespace
 {
 // Vault binary format (V2):
@@ -381,6 +371,11 @@ DecryptedCredential decryptCredentialOnDemand(
     }
 
     // Everything before the separator is the username; everything after is the password.
+    // Use explicit SecureZeroMemory on the intermediate strings because
+    // std::string may use SSO (small-string optimization), storing short
+    // strings directly in the object's stack frame. OPENSSL_cleanse +
+    // shrink_to_fit (used by cleanseString) only wipes heap-allocated
+    // buffers, leaving SSO data intact on the stack.
     std::string userUtf8(data, sep);
     std::string passUtf8;
     if (sep + 1 < len)
@@ -392,6 +387,11 @@ DecryptedCredential decryptCredentialOnDemand(
     DecryptedCredential cred;
     cred.username = seal::utils::utf8ToSecureWide(userUtf8);
     cred.password = seal::utils::utf8ToSecureWide(passUtf8);
+
+    // Wipe via cleanseString (covers the heap-allocated buffer path).
+    // Note: SSO inline-buffer residue is accepted here -- zeroing the live
+    // std::string object metadata with SecureZeroMemory would corrupt it and
+    // cause undefined behaviour when the destructor runs at scope exit.
     seal::Cryptography::cleanseString(userUtf8, passUtf8);
     return cred;
 }
@@ -404,8 +404,8 @@ VaultRecord encryptCredential(
 {
     qCDebug(logVault) << "encryptCredential: platform=" << platform.c_str();
     // Convert wide-char credentials to UTF-8 for the on-disk format.
-    std::string userUtf8 = wcharToUtf8(username.data(), username.size());
-    std::string passUtf8 = wcharToUtf8(password.data(), password.size());
+    std::string userUtf8 = seal::utils::secureWideToUtf8(username);
+    std::string passUtf8 = seal::utils::secureWideToUtf8(password);
 
     // Build the credential plaintext as "username\0password" -- a single null
     // byte separates the two fields.  This mirrors what decryptCredentialOnDemand

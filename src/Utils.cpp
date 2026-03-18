@@ -204,14 +204,32 @@ std::vector<unsigned char> fromBase64(const std::string& b64)
 bool isBase64(const std::string& s)
 {
     if (s.empty() || s.size() < 4)
+    {
         return false;
+    }
+    // Base64 encoded output is always a multiple of 4.
+    if (s.size() % 4 != 0)
+    {
+        return false;
+    }
+    // Require at least one character that distinguishes Base64 from hex
+    // (uppercase G-Z, lowercase g-z, '+', '/', or '='). Without this, a
+    // pure hex string passes the alphabet check and causes the auto-detect
+    // in handleStringMode to misroute hex ciphertext through Base64 decode.
+    bool hasNonHex = false;
     for (char c : s)
     {
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
               c == '+' || c == '/' || c == '='))
+        {
             return false;
+        }
+        if ((c >= 'G' && c <= 'Z') || (c >= 'g' && c <= 'z') || c == '+' || c == '/' || c == '=')
+        {
+            hasNonHex = true;
+        }
     }
-    return true;
+    return hasNonHex;
 }
 
 }  // namespace seal::utils

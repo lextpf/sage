@@ -1,12 +1,14 @@
 #include "QrCapture.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cwctype>
 #include <iostream>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -98,7 +100,7 @@ std::wstring ToLower(std::wstring s)
 // Single source of truth for virtual-camera keywords. Used by
 // ChooseCameraIndexFromNames, IsVirtualCameraName, and BuildCameraPriorityList
 // to avoid duplication and ensure consistent filtering.
-const std::vector<std::wstring> kVirtualCameraKeywords = {
+constexpr std::array<std::wstring_view, 5> kVirtualCameraKeywords = {
     L"camo", L"virtual", L"obs", L"droidcam", L"ndi"};
 
 bool EnvFlagEnabled(const char* key)

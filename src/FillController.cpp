@@ -66,8 +66,9 @@ static const char* stateToString(FillController::State s)
             return "ArmedPassword";
         case FillController::State::Typing:
             return "Typing";
+        default:
+            return "Unknown";
     }
-    return "Unknown";
 }
 
 void FillController::transitionTo(State newState)

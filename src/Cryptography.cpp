@@ -293,12 +293,14 @@ std::span<const unsigned char> Cryptography::aadSpan() noexcept
             static_cast<std::size_t>(seal::cfg::AAD_LEN)};
 }
 
-template <class SecurePwd>
-std::vector<unsigned char> Cryptography::deriveKey(const SecurePwd& pwd,
-                                                   std::span<const unsigned char> salt)
+template <secure_password SecurePwd>
+Cryptography::LockedKeyBuffer Cryptography::deriveKey(const SecurePwd& pwd,
+                                                      std::span<const unsigned char> salt)
 {
     using CharT = std::remove_pointer_t<decltype(pwd.s.data())>;
-    std::vector<unsigned char> key(seal::cfg::KEY_LEN);
+    // The key material lives in guard-paged, VirtualLock'd memory so it
+    // cannot be swapped to disk between derivation and first use.
+    LockedKeyBuffer key(seal::cfg::KEY_LEN);
 
     // RWGuard temporarily changes the password's memory page from PAGE_NOACCESS
     // to PAGE_READWRITE so that scrypt can read the raw bytes. The guard's
@@ -339,7 +341,7 @@ std::vector<unsigned char> Cryptography::deriveKey(const SecurePwd& pwd,
     return key;
 }
 
-template <class SecurePwd>
+template <secure_password SecurePwd>
 std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned char> plaintext,
                                                        const SecurePwd& password)
 {
@@ -354,7 +356,7 @@ std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned 
     std::vector<unsigned char> iv(seal::cfg::IV_LEN);
     opensslCheck(RAND_bytes(iv.data(), (int)iv.size()), "RAND_bytes(iv) failed");
 
-    seal::EVP_CTX ctx;
+    seal::EvpCipherCtx ctx;
     opensslCheck(EVP_EncryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
                  "EncryptInit(cipher) failed");
     opensslCheck(EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr),
@@ -409,7 +411,7 @@ std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned 
     return out;
 }
 
-template <class SecurePwd>
+template <secure_password SecurePwd>
 std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned char> packet,
                                                        const SecurePwd& password)
 {
@@ -450,7 +452,7 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     // Derive key
     auto key = deriveKey(password, std::span<const unsigned char>(salt, seal::cfg::SALT_LEN));
 
-    seal::EVP_CTX ctx;
+    seal::EvpCipherCtx ctx;
     opensslCheck(EVP_DecryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
                  "DecryptInit(cipher) failed");
     opensslCheck(
@@ -506,10 +508,10 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
 // unresolved symbols. These instantiations force the compiler to emit object
 // code for both specializations here, so other translation units can link to
 // them without needing the full template body.
-template std::vector<unsigned char> Cryptography::deriveKey(const secure_string<>&,
-                                                            std::span<const unsigned char>);
-template std::vector<unsigned char> Cryptography::deriveKey(const basic_secure_string<wchar_t>&,
-                                                            std::span<const unsigned char>);
+template Cryptography::LockedKeyBuffer Cryptography::deriveKey(const secure_string<>&,
+                                                               std::span<const unsigned char>);
+template Cryptography::LockedKeyBuffer Cryptography::deriveKey(const basic_secure_string<wchar_t>&,
+                                                               std::span<const unsigned char>);
 
 template std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned char>,
                                                                 const secure_string<>&);

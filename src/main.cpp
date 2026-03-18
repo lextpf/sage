@@ -248,6 +248,7 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
                 }
                 catch (...)
                 {
+                    std::cerr << "Warning: Invalid length, using default (20)\n";
                     opts.genLength = 20;
                 }
             }
@@ -641,15 +642,36 @@ static int handleGenMode(int length)
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+";
     static constexpr int charsetLen = sizeof(charset) - 1;
 
-    std::vector<unsigned char> buf(static_cast<size_t>(length));
-    RAND_bytes(buf.data(), length);
+    // Rejection sampling: the largest multiple of charsetLen that fits in a
+    // byte is used as the acceptance threshold.  Random bytes >= limit are
+    // discarded and re-drawn so every charset position has exactly equal
+    // probability, eliminating the modular bias of a plain % charsetLen.
+    static constexpr unsigned char limit =
+        static_cast<unsigned char>((256 / charsetLen) * charsetLen);
 
     std::string password;
     password.reserve(static_cast<size_t>(length));
-    for (int i = 0; i < length; ++i)
-        password.push_back(charset[buf[static_cast<size_t>(i)] % charsetLen]);
 
-    SecureZeroMemory(buf.data(), buf.size());
+    unsigned char rndBuf[128];
+    int filled = 0;
+    while (filled < length)
+    {
+        int need = length - filled;
+        // Over-request to reduce the number of RAND_bytes round-trips;
+        // each byte has a ~70% acceptance rate (196/256 for charsetLen=76).
+        int request = std::min(need * 2, static_cast<int>(sizeof(rndBuf)));
+        RAND_bytes(rndBuf, request);
+        for (int i = 0; i < request && filled < length; ++i)
+        {
+            if (rndBuf[i] < limit)
+            {
+                password.push_back(charset[rndBuf[i] % charsetLen]);
+                ++filled;
+            }
+        }
+    }
+    SecureZeroMemory(rndBuf, sizeof(rndBuf));
+
     std::cout << password << "\n";
 
     (void)seal::Clipboard::copyWithTTL(password);
@@ -874,8 +896,22 @@ static int handleStringMode(bool encryptMode, const std::string& inlineData)
         }
         else
         {
-            // Auto-detect hex vs base64 input
-            if (seal::utils::isBase64(input))
+            // Auto-detect format: try hex first (stricter check -- even length
+            // + all hex digits), then fall back to Base64.  Hex is checked
+            // first because all hex characters are valid Base64 characters,
+            // but the reverse is not true, making hex the more specific test.
+            bool looksHex = (input.size() % 2 == 0) && input.size() >= 4 &&
+                            std::all_of(input.begin(),
+                                        input.end(),
+                                        [](unsigned char c) { return std::isxdigit(c) != 0; });
+
+            if (looksHex)
+            {
+                auto plain = seal::FileOperations::decryptLine(input, password);
+                std::cout << std::string_view(plain.data(), plain.size()) << "\n";
+                seal::Cryptography::cleanseString(plain);
+            }
+            else if (seal::utils::isBase64(input))
             {
                 auto bytes = seal::utils::fromBase64(input);
                 auto plain = seal::Cryptography::decryptPacket(
@@ -887,9 +923,9 @@ static int handleStringMode(bool encryptMode, const std::string& inlineData)
             }
             else
             {
-                auto plain = seal::FileOperations::decryptLine(input, password);
-                std::cout << std::string_view(plain.data(), plain.size()) << "\n";
-                seal::Cryptography::cleanseString(plain);
+                std::cerr << "Error: Input is neither valid hex nor Base64\n";
+                seal::Cryptography::cleanseString(input, password);
+                return 1;
             }
             seal::Cryptography::cleanseString(input);
         }
