@@ -155,7 +155,6 @@ qt_add_qml_module(seal
         qml/AccountsTable.qml
         qml/AccountRow.qml
         qml/ActionBar.qml
-        qml/DirectoryBar.qml
         qml/StatusFooter.qml
         qml/AccountDialog.qml
         qml/ConfirmDialog.qml

@@ -4,7 +4,7 @@ import QtQuick.Layouts
 
 // Embedded terminal panel for interactive CLI commands.
 //
-// Replaces the main vault UI (SearchBar, AccountsTable, ActionBar, DirectoryBar)
+// Replaces the main vault UI (SearchBar, AccountsTable, ActionBar)
 // when CLI mode is toggled via the window chrome button. Commands are dispatched
 // to Backend.executeCliCommand() and output is received via Backend.cliOutputReady.
 

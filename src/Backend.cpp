@@ -680,11 +680,10 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     if (!m_PasswordSet)
     {
-        // Capture only the non-sensitive service name. Re-showing the add
-        // dialog avoids holding the plaintext username/password in pageable
-        // heap memory inside the std::function while waiting for the master
-        // password. The user re-enters credentials after unlocking.
-        m_PendingAction = [this, service]() { emit addAccountRetryRequired(service); };
+        // Capture all fields so the add completes automatically once the
+        // master password is set — no need to re-prompt the user.
+        m_PendingAction = [this, service, username, password]()
+        { addAccount(service, username, password); };
         ensurePassword();
         return;
     }
@@ -1253,11 +1252,11 @@ void Backend::updateWindowTheme(bool dark)
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
 
     // Match border color to bgDeep so the 1px DWM frame blends invisibly.
-    COLORREF captionColor = dark ? RGB(18, 24, 38) : RGB(245, 239, 230);
+    COLORREF captionColor = dark ? RGB(7, 8, 16) : RGB(248, 246, 242);
     DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &captionColor, sizeof(captionColor));
     DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
 
-    COLORREF textColor = dark ? RGB(240, 242, 248) : RGB(44, 24, 16);
+    COLORREF textColor = dark ? RGB(224, 230, 244) : RGB(30, 26, 18);
     DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &textColor, sizeof(textColor));
 }
 
@@ -1353,7 +1352,7 @@ void Backend::toggleCliMode()
         m_CliWelcomeShown = true;
         emit cliOutputReady(QStringLiteral("seal - Interactive Mode"));
         emit cliOutputReady(
-            QStringLiteral("Commands: :help | :open | :copy | :clear | :gen | :cls | :qr"));
+            QStringLiteral("Commands: :help | :open | :copy | :clear | :gen | :fill | :cls | :qr"));
         emit cliOutputReady(
             QStringLiteral("Type text to encrypt, paste hex to decrypt, or enter a file path."));
         emit cliOutputReady(QString{});
@@ -1379,6 +1378,7 @@ void Backend::executeCliCommand(const QString& command)
         emit cliOutputReady(QStringLiteral("  <path>        Encrypt/decrypt file"));
         emit cliOutputReady(
             QStringLiteral("  :gen [len]    Generate random password (default 20)"));
+        emit cliOutputReady(QStringLiteral("  :fill <svc>   Arm fill for a service by name"));
         emit cliOutputReady(QStringLiteral("  :qr           Scan QR code from webcam"));
         emit cliOutputReady(QStringLiteral("  :hex <text>   Hex-encode text"));
         emit cliOutputReady(QStringLiteral("  :unhex <hex>  Hex-decode to text"));
@@ -1457,6 +1457,36 @@ void Backend::executeCliCommand(const QString& command)
     {
         emit cliOutputReady(QStringLiteral("(scanning QR code from webcam...)"));
         requestQrCapture();
+        return;
+    }
+
+    if (trimmed.startsWith(":fill"))
+    {
+        QString service = trimmed.mid(5).trimmed();
+        if (service.isEmpty())
+        {
+            emit cliOutputReady(QStringLiteral("Usage: :fill <service>"));
+            return;
+        }
+        if (m_Records.empty())
+        {
+            emit cliOutputReady(QStringLiteral("(no vault loaded)"));
+            return;
+        }
+        for (int i = 0; i < static_cast<int>(m_Records.size()); ++i)
+        {
+            if (m_Records[i].deleted)
+                continue;
+            if (QString::fromStdString(m_Records[i].platform)
+                    .compare(service, Qt::CaseInsensitive) == 0)
+            {
+                emit cliOutputReady(QString("(arming fill for %1)")
+                                        .arg(QString::fromStdString(m_Records[i].platform)));
+                armFill(i);
+                return;
+            }
+        }
+        emit cliOutputReady(QString("(no account found for \"%1\")").arg(service));
         return;
     }
 

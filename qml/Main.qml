@@ -23,7 +23,7 @@ ApplicationWindow {
     id: window
     visible: true
     width: 1420
-    height: 690
+    height: 480
     minimumWidth: 1100
     minimumHeight: 540
     title: "seal"
@@ -424,7 +424,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: !Backend.isCliMode
-                Layout.maximumHeight: Backend.isCompact ? 102 : 16777215
+                Layout.maximumHeight: Backend.isCompact ? 102 : (44 + 4 * 48)
                 model: Backend.vaultModel
                 selectedRow: Backend.selectedIndex
                 searchActive: Backend.searchFilter.length > 0
@@ -494,14 +494,6 @@ ApplicationWindow {
                 onCancelFillClicked: {
                     Backend.cancelFill();
                 }
-            }
-
-            // Directory buttons (hidden in compact/CLI mode)
-            DirectoryBar {
-                Layout.fillWidth: true
-                visible: !Backend.isCompact && !Backend.isCliMode
-                onEncryptDirClicked: Backend.encryptDirectory()
-                onDecryptDirClicked: Backend.decryptDirectory()
             }
 
             // CLI panel (shown only in CLI mode)

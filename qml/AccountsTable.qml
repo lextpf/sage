@@ -156,7 +156,7 @@ Rectangle {
             // Thin floating scrollbar thumb, no track background.
             ScrollBar.vertical: ScrollBar {
                 id: vScrollBar
-                policy: root.isCompact ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
+                policy: root.isCompact || listView.contentHeight <= listView.height ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
                 contentItem: Rectangle {
                     implicitWidth: 6
                     radius: 3

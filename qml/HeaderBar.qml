@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Shapes
+import QtQuick.Effects
 
 // Top header bar. Layout: [narwhal icon] [title] [theme toggle] ... [Load] [Save] [Unload]
 //
@@ -57,135 +59,232 @@ Item {
 
         property bool active: false
 
-        // Staggered sonar rings - three concentric rings with conic
-        // rainbow / aurora gradients rippling outward from the icon center.
-        Canvas {
+        // Sonar rings - GPU-rendered vector arcs via QtQuick.Shapes.
+        // Each ring is a donut (two concentric circular paths with OddEvenFill)
+        // filled with a conic gradient. No Canvas rasterization, no onPaint —
+        // the scene graph handles anti-aliasing natively.
+        Shape {
             id: ringWarm
             anchors.centerIn: parent
             width: 0; height: width; opacity: 0
-            onPaint: {
-                var ctx = getContext("2d"); ctx.reset();
-                if (width < 4) return;
-                var cx = width/2, cy = height/2, r = Math.max(1, width/2 - 1.5);
-                var g = ctx.createConicalGradient(cx, cy, 0);
-                g.addColorStop(0.00, "#ff0044");
-                g.addColorStop(0.16, "#ff8800");
-                g.addColorStop(0.33, "#ffee00");
-                g.addColorStop(0.50, "#00dd66");
-                g.addColorStop(0.66, "#0088ff");
-                g.addColorStop(0.83, "#aa00ff");
-                g.addColorStop(1.00, "#ff0044");
-                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2*Math.PI);
-                ctx.lineWidth = 2.5; ctx.strokeStyle = g; ctx.stroke();
+            readonly property real strokeW: 4.5
+            readonly property real outerR: Math.max(1, width / 2)
+            readonly property real innerR: Math.max(0, outerR - strokeW)
+            readonly property real cx: width / 2
+            readonly property real cy: width / 2
+            layer.enabled: true; layer.samples: 4; layer.smooth: true
+            layer.textureSize: Qt.size(Math.max(1, width * 5), Math.max(1, height * 5))
+
+            ShapePath {
+                fillRule: ShapePath.OddEvenFill
+                strokeWidth: -1
+                fillGradient: ConicalGradient {
+                    centerX: ringWarm.cx; centerY: ringWarm.cy; angle: 0
+                    GradientStop { position: 0.00; color: "#ff0044" }
+                    GradientStop { position: 0.16; color: "#ff8800" }
+                    GradientStop { position: 0.33; color: "#ffee00" }
+                    GradientStop { position: 0.50; color: "#00dd66" }
+                    GradientStop { position: 0.66; color: "#0088ff" }
+                    GradientStop { position: 0.83; color: "#aa00ff" }
+                    GradientStop { position: 1.00; color: "#ff0044" }
+                }
+                startX: ringWarm.cx + ringWarm.outerR; startY: ringWarm.cy
+                PathArc { x: ringWarm.cx - ringWarm.outerR; y: ringWarm.cy; radiusX: ringWarm.outerR; radiusY: ringWarm.outerR }
+                PathArc { x: ringWarm.cx + ringWarm.outerR; y: ringWarm.cy; radiusX: ringWarm.outerR; radiusY: ringWarm.outerR }
+                PathMove { x: ringWarm.cx + ringWarm.innerR; y: ringWarm.cy }
+                PathArc { x: ringWarm.cx - ringWarm.innerR; y: ringWarm.cy; radiusX: ringWarm.innerR; radiusY: ringWarm.innerR }
+                PathArc { x: ringWarm.cx + ringWarm.innerR; y: ringWarm.cy; radiusX: ringWarm.innerR; radiusY: ringWarm.innerR }
             }
-            onWidthChanged: requestPaint()
         }
-        Canvas {
+        Shape {
             id: ringMid
             anchors.centerIn: parent
             width: 0; height: width; opacity: 0
-            onPaint: {
-                var ctx = getContext("2d"); ctx.reset();
-                if (width < 4) return;
-                var cx = width/2, cy = height/2, r = Math.max(1, width/2 - 1.5);
-                var g = ctx.createConicalGradient(cx, cy, 0);
-                g.addColorStop(0.00, "#00ff88");
-                g.addColorStop(0.25, "#00ddcc");
-                g.addColorStop(0.50, "#4488ff");
-                g.addColorStop(0.75, "#aa44ff");
-                g.addColorStop(1.00, "#00ff88");
-                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2*Math.PI);
-                ctx.lineWidth = 2.5; ctx.strokeStyle = g; ctx.stroke();
+            readonly property real strokeW: 3.0
+            readonly property real outerR: Math.max(1, width / 2)
+            readonly property real innerR: Math.max(0, outerR - strokeW)
+            readonly property real cx: width / 2
+            readonly property real cy: width / 2
+            layer.enabled: true; layer.samples: 4; layer.smooth: true
+            layer.textureSize: Qt.size(Math.max(1, width * 5), Math.max(1, height * 5))
+
+            ShapePath {
+                fillRule: ShapePath.OddEvenFill
+                strokeWidth: -1
+                fillGradient: ConicalGradient {
+                    centerX: ringMid.cx; centerY: ringMid.cy; angle: 120
+                    GradientStop { position: 0.00; color: "#00ff88" }
+                    GradientStop { position: 0.17; color: "#00ddcc" }
+                    GradientStop { position: 0.33; color: "#22aaff" }
+                    GradientStop { position: 0.50; color: "#6644ff" }
+                    GradientStop { position: 0.67; color: "#aa44ff" }
+                    GradientStop { position: 0.83; color: "#44ddaa" }
+                    GradientStop { position: 1.00; color: "#00ff88" }
+                }
+                startX: ringMid.cx + ringMid.outerR; startY: ringMid.cy
+                PathArc { x: ringMid.cx - ringMid.outerR; y: ringMid.cy; radiusX: ringMid.outerR; radiusY: ringMid.outerR }
+                PathArc { x: ringMid.cx + ringMid.outerR; y: ringMid.cy; radiusX: ringMid.outerR; radiusY: ringMid.outerR }
+                PathMove { x: ringMid.cx + ringMid.innerR; y: ringMid.cy }
+                PathArc { x: ringMid.cx - ringMid.innerR; y: ringMid.cy; radiusX: ringMid.innerR; radiusY: ringMid.innerR }
+                PathArc { x: ringMid.cx + ringMid.innerR; y: ringMid.cy; radiusX: ringMid.innerR; radiusY: ringMid.innerR }
             }
-            onWidthChanged: requestPaint()
         }
-        Canvas {
+        Shape {
             id: ringCool
             anchors.centerIn: parent
             width: 0; height: width; opacity: 0
-            onPaint: {
-                var ctx = getContext("2d"); ctx.reset();
-                if (width < 4) return;
-                var cx = width/2, cy = height/2, r = Math.max(1, width/2 - 1.5);
-                var g = ctx.createConicalGradient(cx, cy, 0);
-                g.addColorStop(0.00, "#44ffcc");
-                g.addColorStop(0.25, "#4466ff");
-                g.addColorStop(0.50, "#cc44ff");
-                g.addColorStop(0.75, "#ff44aa");
-                g.addColorStop(1.00, "#44ffcc");
-                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2*Math.PI);
-                ctx.lineWidth = 2.5; ctx.strokeStyle = g; ctx.stroke();
+            readonly property real strokeW: 2.0
+            readonly property real outerR: Math.max(1, width / 2)
+            readonly property real innerR: Math.max(0, outerR - strokeW)
+            readonly property real cx: width / 2
+            readonly property real cy: width / 2
+            layer.enabled: true; layer.samples: 4; layer.smooth: true
+            layer.textureSize: Qt.size(Math.max(1, width * 5), Math.max(1, height * 5))
+
+            ShapePath {
+                fillRule: ShapePath.OddEvenFill
+                strokeWidth: -1
+                fillGradient: ConicalGradient {
+                    centerX: ringCool.cx; centerY: ringCool.cy; angle: 240
+                    GradientStop { position: 0.00; color: "#44ffcc" }
+                    GradientStop { position: 0.17; color: "#2288ff" }
+                    GradientStop { position: 0.33; color: "#6644ff" }
+                    GradientStop { position: 0.50; color: "#cc44ff" }
+                    GradientStop { position: 0.67; color: "#ff44aa" }
+                    GradientStop { position: 0.83; color: "#ff8866" }
+                    GradientStop { position: 1.00; color: "#44ffcc" }
+                }
+                startX: ringCool.cx + ringCool.outerR; startY: ringCool.cy
+                PathArc { x: ringCool.cx - ringCool.outerR; y: ringCool.cy; radiusX: ringCool.outerR; radiusY: ringCool.outerR }
+                PathArc { x: ringCool.cx + ringCool.outerR; y: ringCool.cy; radiusX: ringCool.outerR; radiusY: ringCool.outerR }
+                PathMove { x: ringCool.cx + ringCool.innerR; y: ringCool.cy }
+                PathArc { x: ringCool.cx - ringCool.innerR; y: ringCool.cy; radiusX: ringCool.innerR; radiusY: ringCool.innerR }
+                PathArc { x: ringCool.cx + ringCool.innerR; y: ringCool.cy; radiusX: ringCool.innerR; radiusY: ringCool.innerR }
             }
-            onWidthChanged: requestPaint()
         }
 
-        // Conic aurora gradient overlay - masked to the icon silhouette
-        // via Canvas compositing (destination-in). Shown during the easter
-        // egg animation in place of the flat icon color.
-        Canvas {
-            id: iconAurora
-            readonly property int ss: 3
+        // Conic aurora gradient overlay masked to the narwhal silhouette.
+        // A Shape renders the gradient (GPU, no rasterization), and
+        // MultiEffect masks it to the SVG icon's alpha channel.
+        Item {
+            id: auroraGradient
             anchors.centerIn: parent
-            width: parent.width * ss; height: parent.height * ss
-            scale: 1.0 / ss
+            width: parent.width; height: parent.height
             visible: false
-            property bool loaded: false
+            layer.enabled: true; layer.smooth: true
+            layer.textureSize: Qt.size(Math.max(1, width * 5), Math.max(1, height * 5))
 
-            Component.onCompleted: loadImage(Theme.iconNarwhal)
-            onImageLoaded: loaded = true
-            onVisibleChanged: if (visible) requestPaint()
-
-            onPaint: {
-                var ctx = getContext("2d"); ctx.reset();
-                if (!loaded || width < 1) return;
-                var g = ctx.createConicalGradient(width/2, height/2, 0);
-                g.addColorStop(0.00, "#00ff88");
-                g.addColorStop(0.15, "#00ddcc");
-                g.addColorStop(0.30, "#4488ff");
-                g.addColorStop(0.50, "#aa44ff");
-                g.addColorStop(0.70, "#ff44aa");
-                g.addColorStop(0.85, "#ff8844");
-                g.addColorStop(1.00, "#00ff88");
-                ctx.fillStyle = g;
-                ctx.fillRect(0, 0, width, height);
-                ctx.globalCompositeOperation = "destination-in";
-                ctx.drawImage(Theme.iconNarwhal, 0, 0, width, height);
+            Shape {
+                anchors.fill: parent
+                ShapePath {
+                    strokeWidth: -1
+                    fillGradient: ConicalGradient {
+                        centerX: auroraGradient.width / 2
+                        centerY: auroraGradient.height / 2
+                        angle: 30
+                        GradientStop { position: 0.00; color: "#00ff88" }
+                        GradientStop { position: 0.15; color: "#00ddcc" }
+                        GradientStop { position: 0.30; color: "#4488ff" }
+                        GradientStop { position: 0.50; color: "#aa44ff" }
+                        GradientStop { position: 0.70; color: "#ff44aa" }
+                        GradientStop { position: 0.85; color: "#ff8844" }
+                        GradientStop { position: 1.00; color: "#00ff88" }
+                    }
+                    startX: 0; startY: 0
+                    PathLine { x: auroraGradient.width; y: 0 }
+                    PathLine { x: auroraGradient.width; y: auroraGradient.height }
+                    PathLine { x: 0; y: auroraGradient.height }
+                    PathLine { x: 0; y: 0 }
+                }
             }
+        }
+
+        Item {
+            id: auroraMask
+            anchors.centerIn: parent
+            width: parent.width; height: parent.height
+            visible: false
+            layer.enabled: true; layer.smooth: true
+            layer.textureSize: Qt.size(Math.max(1, width * 5), Math.max(1, height * 5))
+
+            Image {
+                anchors.fill: parent
+                source: Theme.iconNarwhal
+                sourceSize: Qt.size(parent.width, parent.height)
+            }
+        }
+
+        MultiEffect {
+            id: iconAurora
+            anchors.centerIn: parent
+            width: narwhalIcon.width; height: narwhalIcon.height
+            source: auroraGradient
+            maskEnabled: true
+            maskSource: auroraMask
+            visible: false
         }
 
         SequentialAnimation {
             id: easterEgg
 
+            // Nudge each ring's center by a small random offset so the ripples
+            // don't share a single perfectly concentric origin — like droplets
+            // on a water surface that land slightly apart.
+            ScriptAction {
+                script: {
+                    function jitter() { return (Math.random() - 0.5) * Theme.px(5); }
+                    ringWarm.anchors.horizontalCenterOffset = jitter();
+                    ringWarm.anchors.verticalCenterOffset   = jitter();
+                    ringMid.anchors.horizontalCenterOffset   = jitter();
+                    ringMid.anchors.verticalCenterOffset     = jitter();
+                    ringCool.anchors.horizontalCenterOffset   = jitter();
+                    ringCool.anchors.verticalCenterOffset     = jitter();
+                }
+            }
+
             ParallelAnimation {
-                // Ring 1 - full rainbow, expands furthest
-                NumberAnimation { target: ringWarm; property: "width";   from: Theme.px(18); to: Theme.px(130); duration: 1400; easing.type: Easing.OutQuad }
-                NumberAnimation { target: ringWarm; property: "opacity"; from: 0.45;          to: 0;             duration: 1400; easing.type: Easing.InQuad }
+                // Ring 1 - full rainbow, expands furthest, thickest stroke
+                NumberAnimation { target: ringWarm; property: "width";   from: Theme.px(12); to: Theme.px(180); duration: 2200; easing.type: Easing.OutCubic }
+                NumberAnimation { target: ringWarm; property: "opacity"; from: 0.70;          to: 0;             duration: 2200; easing.type: Easing.InQuad }
 
-                // Ring 2 - aurora, staggered 300ms, mid reach
+                // Ring 2 - aurora, staggered 400ms, mid reach, gradient rotated 120°
                 SequentialAnimation {
-                    PauseAnimation { duration: 300 }
+                    PauseAnimation { duration: 400 }
                     ParallelAnimation {
-                        NumberAnimation { target: ringMid; property: "width";   from: Theme.px(14); to: Theme.px(88); duration: 1300; easing.type: Easing.OutQuad }
-                        NumberAnimation { target: ringMid; property: "opacity"; from: 0.35;          to: 0;            duration: 1300; easing.type: Easing.InQuad }
+                        NumberAnimation { target: ringMid; property: "width";   from: Theme.px(8); to: Theme.px(120); duration: 1900; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: ringMid; property: "opacity"; from: 0.50;          to: 0;             duration: 1900; easing.type: Easing.InQuad }
                     }
                 }
 
-                // Ring 3 - cool aurora, staggered 600ms, least reach
+                // Ring 3 - cool aurora, staggered 800ms, least reach, gradient rotated 240°
                 SequentialAnimation {
-                    PauseAnimation { duration: 600 }
+                    PauseAnimation { duration: 800 }
                     ParallelAnimation {
-                        NumberAnimation { target: ringCool; property: "width";   from: Theme.px(10); to: Theme.px(55); duration: 1200; easing.type: Easing.OutQuad }
-                        NumberAnimation { target: ringCool; property: "opacity"; from: 0.25;          to: 0;            duration: 1200; easing.type: Easing.InQuad }
+                        NumberAnimation { target: ringCool; property: "width";   from: Theme.px(6); to: Theme.px(72); duration: 1600; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: ringCool; property: "opacity"; from: 0.35;          to: 0;            duration: 1600; easing.type: Easing.InQuad }
                     }
                 }
 
-                // Conic aurora gradient on icon - rendered once, GPU-animated opacity.
+                // Conic aurora gradient on icon - smooth fade in, hold, fade out.
                 SequentialAnimation {
                     PropertyAction  { target: iconAurora; property: "visible"; value: true }
-                    PropertyAction  { target: iconAurora; property: "opacity"; value: 0.75 }
-                    PauseAnimation  { duration: 1600 }
-                    NumberAnimation { target: iconAurora; property: "opacity"; to: 0; duration: 200 }
+                    PropertyAction  { target: iconAurora; property: "opacity"; value: 0 }
+                    NumberAnimation { target: iconAurora; property: "opacity"; to: 0.5; duration: 300; easing.type: Easing.OutQuad }
+                    PauseAnimation  { duration: 2000 }
+                    NumberAnimation { target: iconAurora; property: "opacity"; to: 0; duration: 500; easing.type: Easing.InQuad }
                     PropertyAction  { target: iconAurora; property: "visible"; value: false }
+                }
+            }
+
+            // Reset ring offsets so they return to centered.
+            ScriptAction {
+                script: {
+                    ringWarm.anchors.horizontalCenterOffset = 0;
+                    ringWarm.anchors.verticalCenterOffset   = 0;
+                    ringMid.anchors.horizontalCenterOffset   = 0;
+                    ringMid.anchors.verticalCenterOffset     = 0;
+                    ringCool.anchors.horizontalCenterOffset   = 0;
+                    ringCool.anchors.verticalCenterOffset     = 0;
                 }
             }
 
@@ -244,34 +343,47 @@ Item {
     // Spacer pushes vault control buttons to the right edge.
     Item { Layout.fillWidth: true }
 
-    // Vault buttons share the iconBtn palette. HoverHandler for cursor shape
-    // since MouseArea would interfere with Button's click handling.
-    Button {
-        id: loadBtn
-        text: "Load"
-        leftPadding: 12
-        rightPadding: 12
-        onClicked: root.loadClicked()
+    // Inline component matching TintedButton styling from ActionBar.
+    // Uses the iconBtn palette with same-hue reduced-opacity disabled states.
+    component HeaderButton: Button {
+        id: hBtn
+        property string faIcon: ""
+        property color tintTop:       Theme.iconBtnTop
+        property color tintEnd:       Theme.iconBtnEnd
+        property color tintHoverTop:  Theme.iconBtnHoverTop
+        property color tintHoverEnd:  Theme.iconBtnHoverEnd
+        property color tintPressed:   Theme.iconBtnPressed
+        property color tintText:      Theme.textIcon
+        property color tintTextHover: Theme.textSecondary
+        readonly property color _tintBorder: Qt.rgba(tintEnd.r, tintEnd.g, tintEnd.b, Math.min(tintEnd.a + 0.18, 1.0))
+        leftPadding: 14
+        rightPadding: 14
 
-        HoverHandler { id: loadHover; cursorShape: Qt.PointingHandCursor }
+        // Disabled: same hue at reduced opacity.
+        readonly property color _disText: Qt.rgba(tintText.r, tintText.g, tintText.b, 0.32)
+        readonly property color _disTop:  Qt.rgba(tintTop.r, tintTop.g, tintTop.b, tintTop.a * 0.35)
+        readonly property color _disEnd:  Qt.rgba(tintEnd.r, tintEnd.g, tintEnd.b, tintEnd.a * 0.35)
+
+        HoverHandler { id: hBtnHover; cursorShape: Qt.PointingHandCursor }
 
         contentItem: Row {
             spacing: 6
             anchors.centerIn: parent
             SvgIcon {
-                source: Theme.iconFolderOpen
-                width: Theme.iconSizeSmall
-                height: Theme.iconSizeSmall
-                color: loadBtn.hovered ? Theme.textSecondary : Theme.textIcon
+                source: hBtn.faIcon
+                width: Theme.iconSizeMedium
+                height: Theme.iconSizeMedium
+                color: !hBtn.enabled ? hBtn._disText : hBtn.hovered ? hBtn.tintTextHover : hBtn.tintText
+                visible: hBtn.faIcon !== ""
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
             Text {
-                text: "Load"
+                text: hBtn.text
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
-                color: loadBtn.hovered ? Theme.textSecondary : Theme.textIcon
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.DemiBold
+                color: !hBtn.enabled ? hBtn._disText : hBtn.hovered ? hBtn.tintTextHover : hBtn.tintText
                 anchors.verticalCenter: parent.verticalCenter
                 Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
             }
@@ -281,127 +393,43 @@ Item {
         Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
 
         background: Rectangle {
-            implicitWidth: 86
-            implicitHeight: 32
-            radius: Theme.radiusSmall
+            implicitWidth: 100
+            implicitHeight: 38
+            radius: Theme.radiusMedium
             clip: true
             gradient: Gradient {
-                GradientStop { position: 0; color: loadBtn.pressed ? Theme.iconBtnPressed : loadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: loadBtn.pressed ? Theme.iconBtnPressed : loadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 0; color: !hBtn.enabled ? hBtn._disTop : hBtn.pressed ? hBtn.tintPressed : hBtn.hovered ? hBtn.tintHoverTop : hBtn.tintTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                GradientStop { position: 1; color: !hBtn.enabled ? hBtn._disEnd : hBtn.pressed ? hBtn.tintPressed : hBtn.hovered ? hBtn.tintHoverEnd : hBtn.tintEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
             }
             border.width: 1
-            border.color: loadBtn.hovered ? Theme.borderHover : Theme.borderSoft
+            border.color: !hBtn.enabled ? Theme.borderDim
+                        : hBtn.hovered ? Theme.borderHover
+                        : hBtn._tintBorder
             Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-            RippleEffect { id: loadRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
+            RippleEffect { id: hBtnRipple; baseColor: Qt.rgba(hBtn.tintText.r, hBtn.tintText.g, hBtn.tintText.b, 0.30) }
         }
-        onPressed: loadRipple.trigger(loadHover.point.position.x, loadHover.point.position.y)
+        onPressed: hBtnRipple.trigger(hBtnHover.point.position.x, hBtnHover.point.position.y)
     }
 
-    Button {
-        id: saveBtn
+    HeaderButton {
+        text: "Load"
+        faIcon: Theme.iconFolderOpen
+        onClicked: root.loadClicked()
+    }
+
+    HeaderButton {
         text: "Save"
-        leftPadding: 12
-        rightPadding: 12
+        faIcon: Theme.iconFloppyDisk
         enabled: root.vaultLoaded
         onClicked: root.saveClicked()
-
-        HoverHandler { id: saveHover; cursorShape: Qt.PointingHandCursor }
-
-        contentItem: Row {
-            spacing: 6
-            anchors.centerIn: parent
-            SvgIcon {
-                source: Theme.iconFloppyDisk
-                width: Theme.iconSizeSmall
-                height: Theme.iconSizeSmall
-                color: !saveBtn.enabled ? Theme.textDisabled : saveBtn.hovered ? Theme.textSecondary : Theme.textIcon
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-            Text {
-                text: "Save"
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
-                color: !saveBtn.enabled ? Theme.textDisabled : saveBtn.hovered ? Theme.textSecondary : Theme.textIcon
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-        }
-
-        scale: pressed ? 0.97 : 1.0
-        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
-
-        background: Rectangle {
-            implicitWidth: 86
-            implicitHeight: 32
-            radius: Theme.radiusSmall
-            clip: true
-            gradient: Gradient {
-                GradientStop { position: 0; color: !saveBtn.enabled ? Theme.btnDisabledTop : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: !saveBtn.enabled ? Theme.btnDisabledBot : saveBtn.pressed ? Theme.iconBtnPressed : saveBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-            }
-            border.width: 1
-            border.color: !saveBtn.enabled ? Theme.borderDim : saveBtn.hovered ? Theme.borderHover : Theme.borderSoft
-            Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
-
-            RippleEffect { id: saveRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
-        }
-        onPressed: saveRipple.trigger(saveHover.point.position.x, saveHover.point.position.y)
     }
 
-    Button {
-        id: unloadBtn
+    HeaderButton {
         text: "Unload"
-        leftPadding: 12
-        rightPadding: 12
+        faIcon: Theme.iconEject
         enabled: root.vaultLoaded
         onClicked: root.unloadClicked()
-
-        HoverHandler { id: unloadHover; cursorShape: Qt.PointingHandCursor }
-
-        contentItem: Row {
-            spacing: 6
-            anchors.centerIn: parent
-            SvgIcon {
-                source: Theme.iconEject
-                width: Theme.iconSizeSmall
-                height: Theme.iconSizeSmall
-                color: !unloadBtn.enabled ? Theme.textDisabled : unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-            Text {
-                text: "Unload"
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
-                color: !unloadBtn.enabled ? Theme.textDisabled : unloadBtn.hovered ? Theme.textSecondary : Theme.textIcon
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-        }
-
-        scale: pressed ? 0.97 : 1.0
-        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
-
-        background: Rectangle {
-            implicitWidth: 96
-            implicitHeight: 32
-            radius: Theme.radiusSmall
-            clip: true
-            gradient: Gradient {
-                GradientStop { position: 0; color: !unloadBtn.enabled ? Theme.btnDisabledTop : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverTop : Theme.iconBtnTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: !unloadBtn.enabled ? Theme.btnDisabledBot : unloadBtn.pressed ? Theme.iconBtnPressed : unloadBtn.hovered ? Theme.iconBtnHoverEnd : Theme.iconBtnEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-            }
-            border.width: 1
-            border.color: !unloadBtn.enabled ? Theme.borderDim : unloadBtn.hovered ? Theme.borderHover : Theme.borderSoft
-            Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
-
-            RippleEffect { id: unloadRipple; baseColor: Qt.rgba(Theme.iconBtnHoverTop.r, Theme.iconBtnHoverTop.g, Theme.iconBtnHoverTop.b, 0.40) }
-        }
-        onPressed: unloadRipple.trigger(unloadHover.point.position.x, unloadHover.point.position.y)
     }
     }  // RowLayout
     }  // MouseArea
