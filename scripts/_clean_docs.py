@@ -57,6 +57,8 @@ def fix_admonition_indent(text: str) -> str:
 
 PAGE_TITLE_ICONS = {
     "Crypto":     ":material-lock:",
+    "Memory":     ":material-memory:",
+    "I/O":        ":material-file-lock:",
     "Vault":      ":material-safe-square-outline:",
     "GUI":        ":material-monitor:",
     "CLI":        ":material-console:",
@@ -293,7 +295,7 @@ def inject_version(text: str, version: str) -> str:
     if not version or f"**v{version}**" in text:
         return text
     return re.sub(
-        r"^(# sage)\n\n(.+)$",
+        r"^(# seal)\n\n(.+)$",
         rf"\1\n\n**v{version}** | \2",
         text,
         count=1,

@@ -13,12 +13,20 @@ files:
 groups:
   - name: Crypto
     title: ":material-lock: Crypto"
-    description: AES-256-GCM encryption, scrypt key derivation, and secure memory primitives.
+    description: AES-256-GCM encryption, scrypt key derivation, and OpenSSL primitives.
+
+  - name: Memory
+    title: ":material-memory: Memory"
+    description: Secure memory allocators, guard pages, locked strings, and DPAPI protection.
+
+  - name: IO
+    title: ":material-file-lock: I/O"
+    description: File encryption/decryption, clipboard operations, and stream I/O.
     groups:
-      - name: FileOperations
+      - name: IO_FileOperations
         title: FileOperations
         description: File-level encryption, decryption, batch processing, and stream I/O.
-      - name: Clipboard
+      - name: IO_Clipboard
         title: Clipboard
         description: Windows clipboard operations with TTL-based scrubbing.
 
@@ -40,6 +48,18 @@ groups:
       - name: FillController
         title: FillController
         description: Credential auto-fill via global Windows input hooks.
+      - name: WindowController
+        title: WindowController
+        description: Window chrome operations — theme, drag, always-on-top, compact mode.
+      - name: WindowChrome
+        title: WindowChrome
+        description: Custom DWM title bar, resize borders, and native event filter.
+      - name: NativeDialogs
+        title: NativeDialogs
+        description: Win32 file-open, file-save, and folder-picker dialogs.
+      - name: QrCapture
+        title: QrCapture
+        description: Webcam QR code capture with secure memory handling.
 
   - name: CLI
     title: ":material-console: CLI"
@@ -48,7 +68,14 @@ groups:
       - name: MaskedCredentialView
         title: MaskedCredentialView
         description: Interactive masked console UI for decrypted credentials.
+      - name: CliHandler
+        title: CliHandler
+        description: Built-in CLI command dispatch (help, gen, hex, qr, fill).
 
   - name: Utilities
     title: ":material-toolbox: Utilities"
     description: String, hex, path utilities, and shared helpers.
+    groups:
+      - name: Logging
+        title: Logging
+        description: Qt logging categories and custom message handler.

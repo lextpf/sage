@@ -69,27 +69,68 @@ nav:
     - Crypto:
       - Crypto/index.md
       - Crypto/Cryptography.md
-      - Crypto/locked_allocator.md
-      - Crypto/locked_header.md
-      - Crypto/secure_string.md
-      - FileOperations: Crypto/FileOperations/FileOperations.md
-      - Clipboard: Crypto/Clipboard/Clipboard.md
+      - cfg: cfg/index.md
+      - EvpCipherCtx: Crypto/EvpCipherCtx.md
+      - EvpMdCtx: Crypto/EvpMdCtx.md
+    - Memory:
+      - Memory/index.md
+      - Memory/locked_allocator.md
+      - Memory/locked_header.md
+      - basic_secure_string: Memory/basic_secure_string.md
+      - secure_triplet16: Memory/secure_triplet16.md
+      - DPAPIGuard: Memory/DPAPIGuard.md
+      - ScopedDpapiUnprotect: Memory/ScopedDpapiUnprotect.md
+      - RWGuard: Memory/RWGuard.md
+    - I/O:
+      - IO/index.md
+      - FileOperations:
+        - IO/IO_FileOperations/index.md
+        - IO/IO_FileOperations/FileOperations.md
+      - Clipboard:
+        - IO/IO_Clipboard/index.md
+        - IO/IO_Clipboard/Clipboard.md
     - Vault:
       - Vault/index.md
       - Vault/VaultRecord.md
+      - DecryptedCredential: Vault/DecryptedCredential.md
       - VaultModel:
         - Vault/VaultModel/index.md
         - Vault/VaultModel/VaultListModel.md
         - Vault/VaultModel/VaultListModel/Roles.md
     - GUI:
       - GUI/index.md
-      - Backend: GUI/Backend/Backend.md
-      - FillController: GUI/FillController/FillController.md
-      - State: GUI/FillController/FillController/State.md
-      - TypeTarget: GUI/FillController/FillController/TypeTarget.md
+      - Backend:
+        - GUI/Backend/index.md
+        - GUI/Backend/Backend.md
+      - FillController:
+        - GUI/FillController/index.md
+        - GUI/FillController/FillController.md
+        - State: GUI/FillController/FillController/State.md
+        - TypeTarget: GUI/FillController/FillController/TypeTarget.md
+      - WindowController:
+        - GUI/WindowController/index.md
+        - GUI/WindowController/WindowController.md
+      - WindowChrome:
+        - GUI/WindowChrome/index.md
+        - TitleBarFilter: GUI/WindowChrome/TitleBarFilter.md
+      - NativeDialogs:
+        - GUI/NativeDialogs/index.md
+      - QrCapture:
+        - GUI/QrCapture/index.md
     - CLI:
       - CLI/index.md
-      - MaskedCredentialView: CLI/MaskedCredentialView/MaskedCredentialView.md
-      - HitRegion: CLI/MaskedCredentialView/MaskedCredentialView/HitRegion.md
+      - scoped_console: CLI/scoped_console.md
+      - MaskedCredentialView:
+        - CLI/MaskedCredentialView/index.md
+        - CLI/MaskedCredentialView/MaskedCredentialView.md
+        - HitRegion: CLI/MaskedCredentialView/MaskedCredentialView/HitRegion.md
+      - CliHandler:
+        - CLI/CliHandler/index.md
+        - CliCallbacks: CLI/CliHandler/CliCallbacks.md
     - Utilities:
       - Utilities/index.md
+      - Logging:
+        - Utilities/Logging/index.md
+    - Namespaces:
+      - seal: seal/index.md
+      - seal::secure_string: seal/secure_string/index.md
