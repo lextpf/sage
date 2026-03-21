@@ -91,6 +91,14 @@ set(SEAL_SOURCES
     src/QmlMain.cpp
     src/Vault.cpp
     src/Logging.cpp
+    src/PasswordGen.cpp
+    src/WindowChrome.cpp
+    src/NativeDialogs.cpp
+    src/CameraSelector.cpp
+    src/CliDispatch.cpp
+    src/CliHandler.cpp
+    src/WindowController.cpp
+    src/CliModes.cpp
 )
 
 qt_standard_project_setup()
@@ -228,6 +236,7 @@ if(ENABLE_TESTS)
         src/Clipboard.cpp
         src/Console.cpp
         src/FileOperations.cpp
+        src/PasswordGen.cpp
     )
 
     target_include_directories(seal_tests PRIVATE

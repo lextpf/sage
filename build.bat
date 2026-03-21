@@ -3,9 +3,18 @@ REM ============================================================================
 REM build.bat - Complete build pipeline for seal
 REM ============================================================================
 REM This script:
-REM   1. Configures the project using CMake with vcpkg toolchain
-REM   2. Builds the Release configuration
-REM   3. Generates API documentation with doxide + mkdocs (if available)
+REM   1. Runs clang-format on source files
+REM   2. Configures the project using CMake with vcpkg toolchain
+REM   3. Builds the Release configuration
+REM   4. Generates documentation with doxide + mkdocs (if available)
+REM
+REM   MSVC has Internal Compiler Errors (ICEs) when building Qt6 via vcpkg.
+REM   This forces us to: pin the compiler to 14.43 (14.44 crashes), disable
+REM   precompiled headers, limit parallelism to 1, and redirect vcpkg
+REM   buildtrees to a short path (C:\b\) to dodge the 260-char MAX_PATH
+REM   limit that Qt's deep build tree hits. The rest is defensive cache
+REM   management so stale CMake state doesn't silently pick the wrong
+REM   (crashing) compiler.
 REM ============================================================================
 
 setlocal enabledelayedexpansion
@@ -26,9 +35,11 @@ set "VCPKG_TRIPLET=%VCPKG_TRIPLET%"
 
 REM --- Defaults for optional env overrides ---
 if not defined VCPKG_TRIPLET set "VCPKG_TRIPLET=%DEFAULT_TRIPLET%"
+REM MSVC crashes under parallel compilation when building Qt6.
 if not defined VCPKG_MAX_CONCURRENCY set "VCPKG_MAX_CONCURRENCY=1"
 
 REM --- Pin MSVC toolset version if the expected compiler is installed ---
+REM MSVC 14.44 ICEs on Qt6 sources; pin to 14.43 which is stable.
 if not defined VCVARS_VER if exist "%MSVC_ROOT%\Tools\MSVC\14.43.34808" set "VCVARS_VER=14.43"
 set "PINNED_TOOLSET="
 if defined VCVARS_VER set "PINNED_TOOLSET=v143,version=%VCVARS_VER%"
@@ -39,8 +50,10 @@ REM --- Overlay triplets ---
 set "VCPKG_OVERLAY_TRIPLETS_ARG="
 if exist "%REPO_OVERLAY_TRIPLETS%" set "VCPKG_OVERLAY_TRIPLETS_ARG=-DVCPKG_OVERLAY_TRIPLETS=%REPO_OVERLAY_TRIPLETS%"
 
-REM --- Build output and vcpkg buildtrees (avoid MAX_PATH) ---
+REM --- Build output and vcpkg buildtrees ---
 set "BUILD_DIR=%REPO_ROOT%\build"
+REM Qt6's vcpkg buildtree paths are deeply nested and exceed
+REM the Windows 260-char MAX_PATH limit. Redirect to a short root path.
 if not defined VCPKG_BUILDTREES_ROOT set "VCPKG_BUILDTREES_ROOT=C:\b\seal-vcpkg"
 if not exist "%VCPKG_BUILDTREES_ROOT%" mkdir "%VCPKG_BUILDTREES_ROOT%" >nul 2>&1
 set "VCPKG_INSTALL_OPTIONS_ARG=-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=%VCPKG_BUILDTREES_ROOT%"
@@ -62,6 +75,8 @@ if not exist "%TOOLCHAIN_FILE%" (
     exit /b 1
 )
 
+REM vcvars64.bat silently overwrites VCPKG_ROOT with the
+REM VS-bundled vcpkg path, which isn't ours. Save and restore it.
 set "SAVED_VCPKG_ROOT=%VCPKG_ROOT%"
 if defined VCVARS_VER (
     call "%VSVCVARS%" -vcvars_ver=%VCVARS_VER%
@@ -72,11 +87,10 @@ if errorlevel 1 (
     echo ERROR: Failed to initialize Visual Studio build environment
     exit /b 1
 )
-
-REM vcvars64.bat may override VCPKG_ROOT with VS-bundled vcpkg; restore ours.
 set "VCPKG_ROOT=%SAVED_VCPKG_ROOT%"
 
-REM If the existing cache points to a different toolchain file, clear it first.
+REM if VCPKG_ROOT changed between runs (e.g. env var updated),
+REM the cached toolchain path becomes stale and CMake won't re-detect it.
 if exist "%BUILD_DIR%\CMakeCache.txt" (
     set "CACHED_TOOLCHAIN_FILE="
     for /f "tokens=2 delims==" %%I in ('findstr /B /C:"CMAKE_TOOLCHAIN_FILE:UNINITIALIZED=" /C:"CMAKE_TOOLCHAIN_FILE:FILEPATH=" "%BUILD_DIR%\CMakeCache.txt"') do set "CACHED_TOOLCHAIN_FILE=%%I"
@@ -95,7 +109,9 @@ if exist "%BUILD_DIR%\CMakeCache.txt" (
     )
 )
 
-REM Generator toolset changes are sticky in CMakeCache; refresh cache when pinned toolset is active.
+REM CMake bakes the generator toolset (-T) into CMakeCache.
+REM If we don't clear it, a stale cache can silently use the wrong (crashing)
+REM MSVC version even though we pass the correct -T flag.
 if defined PINNED_TOOLSET if exist "%BUILD_DIR%\CMakeCache.txt" (
     echo INFO: Refreshing CMake cache to apply generator toolset %PINNED_TOOLSET%
     del /f /q "%BUILD_DIR%\CMakeCache.txt" >nul 2>&1
@@ -108,7 +124,7 @@ echo ===========================================================================
 echo Repo Root:            %REPO_ROOT%
 echo vcpkg Root:           %VCPKG_ROOT%
 echo Triplet:              %VCPKG_TRIPLET%
-if defined VCPKG_OVERLAY_TRIPLETS_ARG echo Overlay Triplets:      %REPO_OVERLAY_TRIPLETS%
+if defined VCPKG_OVERLAY_TRIPLETS_ARG echo Overlay Triplets:     %REPO_OVERLAY_TRIPLETS%
 if defined VCVARS_VER echo MSVC Toolset:         %VCVARS_VER%
 if defined PINNED_TOOLSET echo CMake Toolset Arg:    %PINNED_TOOLSET%
 echo Max Concurrency:      %VCPKG_MAX_CONCURRENCY%
@@ -117,23 +133,25 @@ echo Build Directory:      %BUILD_DIR%
 echo.
 
 REM ============================================================================
-REM STEP 1: Format Source Code (clang-format)
+REM STEP 1: Run clang-format
 REM ============================================================================
-echo [1/5] Formatting source code...
+echo [1/4] Running clang-format...
 echo ----------------------------------------------------------------------------
+
 where clang-format >nul 2>&1
-if %ERRORLEVEL% neq 0 (
+if errorlevel 1 (
     echo SKIP: clang-format not found in PATH
 ) else (
     for %%f in (src\*.cpp src\*.h src\*.hpp src\*.c) do (
-        if exist "%%f" (
-            clang-format -i "%%f"
-        )
+        if exist "%%f" clang-format -i "%%f"
     )
     echo Formatting complete.
 )
 echo.
 
+REM ============================================================================
+REM STEP 2: CMake Configuration
+REM ============================================================================
 echo [2/4] Configuring with CMake...
 echo ----------------------------------------------------------------------------
 cmake -S "%REPO_ROOT%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 %CMAKE_TOOLSET_ARG% ^
@@ -151,6 +169,9 @@ if errorlevel 1 (
 )
 echo.
 
+REM ============================================================================
+REM STEP 3: Build Release
+REM ============================================================================
 echo [3/4] Building Release...
 echo ----------------------------------------------------------------------------
 cmake --build "%BUILD_DIR%" --config Release
@@ -160,6 +181,9 @@ if errorlevel 1 (
 )
 echo.
 
+REM ============================================================================
+REM STEP 4: Generate API Documentation (doxide)
+REM ============================================================================
 echo [4/4] Generating API documentation...
 echo ----------------------------------------------------------------------------
 where doxide >nul 2>&1
@@ -195,16 +219,21 @@ if errorlevel 1 (
 )
 echo.
 
+REM ============================================================================
+REM SUMMARY
+REM ============================================================================
 echo ============================================================================
 echo                           BUILD PIPELINE COMPLETE
 echo ============================================================================
 echo.
 echo Build Output:
-echo   - EXE: %BUILD_DIR%\bin\Release\seal.exe
+echo   Release: build\bin\Release\seal.exe
 echo.
 echo Documentation:
-echo   - API: %REPO_ROOT%\site\ (if doxide available)
+echo   - Md:   docs\  (if doxide available)
+echo   - Html: site\  (if mkdocs available)
 echo.
+echo ============================================================================
 
 endlocal
 exit /b 0
