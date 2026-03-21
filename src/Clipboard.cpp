@@ -13,10 +13,7 @@ namespace
 {
 
 // RAII guard for OpenClipboard / CloseClipboard.
-// Does NOT call EmptyClipboard on construction because read-only callers
-// (e.g. copyWithTTL's comparison thread) need to inspect the clipboard
-// without destroying its contents. Write callers must explicitly call
-// EmptyClipboard() after locking.
+// Write callers must explicitly call EmptyClipboard() after locking.
 struct ClipboardLock
 {
     bool ok = false;
@@ -74,8 +71,8 @@ bool Clipboard::setText(const std::string& text)
     }
 
     SIZE_T bytes = (static_cast<SIZE_T>(wlen) + 1) * sizeof(wchar_t);
-    // GMEM_MOVEABLE is required by the clipboard API - the system needs to
-    // relocate the block when other processes request the data.
+    // GMEM_MOVEABLE is required by the The Windows clipboard API
+    // the system needs to relocate the block when other processes request data.
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
     if (!hMem)
     {
@@ -114,14 +111,23 @@ bool Clipboard::setText(const std::string& text)
 
 bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
 {
-    std::string val(data, n);
-    bool ok = setText(val);
+    // Store the original value in locked, guard-paged memory so it cannot be
+    // swapped to disk during the TTL window.
+    seal::secure_string<> val;
+    val.s.assign(data, data + n);
+
+    // setText() expects const std::string&; create a short-lived copy, call,
+    // then wipe immediately. The copy exists only for the duration of the
+    // Win32 clipboard API call.
+    std::string tmp(val.s.begin(), val.s.end());
+    bool ok = setText(tmp);
+    seal::Cryptography::cleanseString(tmp);
     if (!ok)
     {
         return false;
     }
 
-    // Joinable TTL thread: sleeps for the TTL in short increments (so it
+    // Joinable TTL thread: Sleeps for the TTL in short increments (so it
     // can respond to stop_requested during static destruction), then checks
     // whether the clipboard still holds our value before clearing.
     // The lock serializes concurrent copyWithTTL calls so the jthread
@@ -158,23 +164,25 @@ bool Clipboard::copyWithTTL(const char* data, size_t n, DWORD ttl_ms)
             wchar_t* w = h ? static_cast<wchar_t*>(GlobalLock(h)) : nullptr;
             if (w)
             {
-                // Round-trip current clipboard UTF-16 back to UTF-8 for comparison
+                // Round-trip current clipboard UTF-16 back to UTF-8 into locked
+                // memory so the comparison buffer is also non-pageable.
                 int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-                std::string cur(need > 0 ? static_cast<size_t>(need) : 0, '\0');
+                seal::secure_string<> cur;
                 if (need > 0)
                 {
-                    int written =
-                        WideCharToMultiByte(CP_UTF8, 0, w, -1, cur.data(), need, nullptr, nullptr);
-                    if (written > 0 && !cur.empty() && cur.back() == '\0')
+                    cur.s.resize(static_cast<size_t>(need), '\0');
+                    int written = WideCharToMultiByte(
+                        CP_UTF8, 0, w, -1, cur.s.data(), need, nullptr, nullptr);
+                    if (written > 0 && !cur.empty() && cur.s.back() == '\0')
                     {
-                        cur.pop_back();
+                        cur.s.pop_back();
                     }
                 }
                 GlobalUnlock(h);
 
                 // Constant-time compare to prevent a timing side-channel
                 // from leaking clipboard contents byte-by-byte.
-                same = seal::Cryptography::ctEqualAny(cur, val);
+                same = seal::Cryptography::ctEqualAny(cur.s, val.s);
             }
 
             // Only clear if nobody else has changed the clipboard
@@ -207,11 +215,28 @@ bool Clipboard::copyInputFile()
     return copyWithTTL(buf);
 }
 
+// Shared state for the measurement hook callback. Only accessed from the
+// thread that installed the hook (single-threaded, no synchronisation needed).
+LARGE_INTEGER s_CallNextDuration{};
+bool s_HookFired = false;
+
+// Temporary WH_KEYBOARD_LL callback that times only CallNextHookEx.
+// If we are the only hook in the chain, CallNextHookEx returns in <0.1ms.
+// Any third-party hook adds its processing time to the measured delta.
+static LRESULT CALLBACK MeasureHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    LARGE_INTEGER before, after;
+    QueryPerformanceCounter(&before);
+    LRESULT r = CallNextHookEx(nullptr, nCode, wParam, lParam);
+    QueryPerformanceCounter(&after);
+    s_CallNextDuration.QuadPart = after.QuadPart - before.QuadPart;
+    s_HookFired = true;
+    return r;
+}
+
 // Heuristic check for suspicious global keyboard hooks.
-// Installs a temporary WH_KEYBOARD_LL hook and measures the time
-// CallNextHookEx takes. If another hook in the chain adds latency
-// beyond a threshold, a third-party hook is likely present.
-// Returns true if a suspicious hook is detected.
+// Returns true if a third-party hook is likely intercepting keystrokes.
+// Advisory only - typeSecret() proceeds regardless but emits a warning.
 static bool isKeyboardHookPresent()
 {
     // Heuristic 1 - zero-size foreground window check.
@@ -232,33 +257,19 @@ static bool isKeyboardHookPresent()
         }
     }
 
-    // Heuristic 2 - timing-based hook detection.
-    // We install our own temporary WH_KEYBOARD_LL hook, inject a no-op
-    // keystroke via SendInput, and measure how long the hook chain takes
-    // to process it. An empty chain completes in <2ms; a third-party hook
-    // adds measurable latency (>15ms threshold). This catches hooks that
-    // don't manifest as visible windows.
-    struct HookCtx
-    {
-        LARGE_INTEGER freq{};
-        LARGE_INTEGER start{};
-        LARGE_INTEGER end{};
-        bool measured = false;
-    } ctx;
-    QueryPerformanceFrequency(&ctx.freq);
+    // Heuristic 2 - timing-based hook chain detection.
+    // Install a temporary WH_KEYBOARD_LL hook whose callback times only
+    // CallNextHookEx (not the message pump or Sleep). Take 3 samples and
+    // use the median to filter scheduling jitter. An empty chain returns
+    // in <0.1ms; a threshold of 2ms provides 20x headroom while catching
+    // any hook that does meaningful work (disk I/O, IPC, network).
+    LARGE_INTEGER freq{};
+    QueryPerformanceFrequency(&freq);
 
-    HHOOK hHook = SetWindowsHookExW(
-        WH_KEYBOARD_LL,
-        [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT
-        { return CallNextHookEx(nullptr, nCode, wParam, lParam); },
-        nullptr,
-        0);
-
+    HHOOK hHook = SetWindowsHookExW(WH_KEYBOARD_LL, MeasureHookProc, nullptr, 0);
     if (!hHook)
         return false;  // Can't install hook - inconclusive, proceed
 
-    // Send a dummy keystroke and time the hook chain processing
-    QueryPerformanceCounter(&ctx.start);
     INPUT dummyInput[2]{};
     dummyInput[0].type = INPUT_KEYBOARD;
     dummyInput[0].ki.wVk = 0;
@@ -267,26 +278,43 @@ static bool isKeyboardHookPresent()
     dummyInput[1] = dummyInput[0];
     dummyInput[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
 
-    // Inject the dummy keystroke so the hook chain processes it.
-    SendInput(2, dummyInput, sizeof(INPUT));
+    constexpr int NUM_SAMPLES = 3;
+    double samples[NUM_SAMPLES] = {0.0, 0.0, 0.0};
+    int validSamples = 0;
 
-    // Pump messages briefly to let the hook fire
-    MSG msg;
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < NUM_SAMPLES; ++i)
     {
-        if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-            DispatchMessageW(&msg);
-        Sleep(1);
+        s_HookFired = false;
+        SendInput(2, dummyInput, sizeof(INPUT));
+
+        // Pump messages until the hook fires or a 50ms safety timeout.
+        // No Sleep - tight PeekMessage loop eliminates the ~10ms noise
+        // that made the previous 15ms threshold unreliable.
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        MSG msg;
+        while (!s_HookFired && std::chrono::steady_clock::now() < deadline)
+        {
+            if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                DispatchMessageW(&msg);
+        }
+
+        if (s_HookFired)
+        {
+            samples[validSamples++] = static_cast<double>(s_CallNextDuration.QuadPart) * 1000.0 /
+                                      static_cast<double>(freq.QuadPart);
+        }
     }
-    QueryPerformanceCounter(&ctx.end);
 
     UnhookWindowsHookEx(hHook);
 
-    // If processing took more than 15ms, another hook in the chain
-    // is adding latency (normal chain with no hooks: < 2ms).
-    double elapsed_ms =
-        (double)(ctx.end.QuadPart - ctx.start.QuadPart) * 1000.0 / (double)ctx.freq.QuadPart;
-    if (elapsed_ms > 15.0)
+    if (validSamples == 0)
+        return false;  // Hook never fired - inconclusive
+
+    // Sort and take the median to filter outliers from scheduling jitter.
+    std::sort(samples, samples + validSamples);
+    double median = samples[validSamples / 2];
+
+    if (median > 2.0)
     {
         OutputDebugStringA("[seal] WARN: keyboard hook chain latency suggests third-party hooks\n");
         return true;
@@ -302,7 +330,7 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
         return false;
     }
 
-    // Heuristic: warn if keyboard hooks are detected (keylogger risk).
+    // Heuristic: Warn if keyboard hooks are detected (keylogger risk).
     // This is best-effort - a determined attacker can evade detection.
     if (isKeyboardHookPresent())
     {
@@ -337,9 +365,7 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
 
     // Build key-down / key-up pairs for each UTF-16 code unit.
     // KEYEVENTF_UNICODE tells SendInput to use the scan-code field as a raw
-    // Unicode code point, bypassing virtual-key translation entirely. This
-    // lets us type arbitrary Unicode characters (accented letters, symbols,
-    // CJK) without needing a matching keyboard layout or VK code.
+    // Unicode code point, bypassing virtual-key translation entirely.
     std::vector<INPUT> seq;
     seq.reserve(static_cast<size_t>(w.size()) * 2);
     for (wchar_t ch : w)
@@ -354,7 +380,7 @@ bool typeSecret(const wchar_t* bytes, int len, DWORD delay_ms)
         seq.push_back(up);
     }
 
-    // Send one event at a time with a randomised inter-key delay (5 + tick%8
+    // Send one event at a time with a randomised inter-key delay (5 + tick % 8
     // = 5..12ms) after each down/up pair. The jitter prevents input-rate
     // limiters in web apps and remote desktops from dropping or reordering
     // keystrokes that arrive faster than their processing loop.
@@ -381,7 +407,7 @@ bool openInputInNotepad()
     HINSTANCE h = ShellExecuteA(nullptr, "open", "notepad.exe", file, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(h) <= 32)
     {
-        // Fallback: use CreateProcessW instead of system() to avoid
+        // Fallback: Use CreateProcessW instead of system() to avoid
         // command injection risks from cmd /c.
         STARTUPINFOW si{};
         si.cb = sizeof(si);

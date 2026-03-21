@@ -17,6 +17,7 @@ namespace seal
 {
 
 class FillController;
+class WindowController;
 
 /**
  * @class Backend
@@ -47,13 +48,16 @@ class FillController;
  *     VaultLoaded --> NoVault : unloadVault() [password retained]
  *     VaultSaved --> NoVault : unloadVault() [password retained]
  *     PasswordSet --> NoVault : cleanup()
+ *     VaultLoaded --> NoVault : cleanup()
+ *     VaultSaved --> NoVault : cleanup()
  * ```
  *
  * 1. User supplies a master password via submitPassword().
  * 2. loadVault() opens a `.seal` file and populates m_Records.
  * 3. Credentials are displayed through the VaultListModel (vaultModel property).
  * 4. saveVault() encrypts and writes records back to disk.
- * 5. unloadVault() clears records and wipes the master password.
+ * 5. unloadVault() clears records but retains the master password;
+ *    call cleanup() to wipe the password and release all resources.
  *
  * ## :material-keyboard: Auto-Fill
  *
@@ -474,33 +478,11 @@ private:
     static seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>> qstringToSecureWide(
         const QString& qstr);
 
-    /**
-     * @brief Open a Win32 file-open dialog.
-     * @param title  Dialog title
-     * @param filter File type filter (e.g. "Vault Files (*.seal)")
-     * @return Selected file path, or empty string if cancelled
-     */
-    QString openFileDialog(const QString& title, const QString& filter);
-
-    /**
-     * @brief Open a Win32 file-save dialog.
-     * @param title  Dialog title
-     * @param filter File type filter (e.g. "Vault Files (*.seal)")
-     * @return Selected file path, or empty string if cancelled
-     */
-    QString saveFileDialog(const QString& title, const QString& filter);
-
-    /**
-     * @brief Open a Win32 folder picker dialog.
-     * @param title Dialog title
-     * @return Selected folder path, or empty string if cancelled
-     */
-    QString openFolderDialog(const QString& title);
-
     std::function<void()> m_PendingAction;  ///< Action deferred until password is entered.
 
-    VaultListModel* m_Model = nullptr;           ///< Vault list model for QML binding.
-    FillController* m_FillController = nullptr;  ///< Auto-fill hook controller.
+    VaultListModel* m_Model = nullptr;               ///< Vault list model for QML binding.
+    FillController* m_FillController = nullptr;      ///< Auto-fill hook controller.
+    WindowController* m_WindowController = nullptr;  ///< Window chrome controller.
 
     seal::basic_secure_string<wchar_t> m_Password;  ///< Master password in locked memory.
     seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>
@@ -516,12 +498,9 @@ private:
     QString m_SearchFilter;                          ///< Active search/filter string.
     QString m_CountdownText;                         ///< Countdown display for timed ops.
     bool m_Busy = false;                             ///< Background operation in progress.
-    bool m_AlwaysOnTop = false;                      ///< Window pinned above others.
-    bool m_Compact = false;                          ///< Compact mode active.
     bool m_CliMode = false;                          ///< CLI panel active.
     bool m_CliWelcomeShown = false;                  ///< Welcome banner shown once.
-    int m_NormalWidth = 0;                           ///< Saved width before compact.
-    int m_NormalHeight = 0;                          ///< Saved height before compact.
+    QThread* m_QrThread = nullptr;                   ///< Active QR capture worker thread.
 };
 
 }  // namespace seal

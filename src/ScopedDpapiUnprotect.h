@@ -10,7 +10,7 @@ namespace seal
  * @brief RAII guard that calls guard.unprotect() on construction and
  *        guard.reprotect() on destruction.
  * @author Alex (https://github.com/lextpf)
- * @ingroup Crypto
+ * @ingroup Memory
  *
  * Used to bracket code that needs plaintext access to a DPAPI-protected
  * buffer. The template parameter allows use with any DPAPIGuard

@@ -147,6 +147,40 @@ ApplicationWindow {
         }
     }
 
+    // Inline component for window chrome buttons. All share the same 46x36
+    // size, background hover behavior, and centered icon pattern. Callers
+    // override iconColor/hoverColor/idleColor to customize appearance.
+    component ChromeButton: Rectangle {
+        property alias iconSource: _icon.source
+        property color iconColor: _area.containsMouse ? Theme.textPrimary : Theme.textMuted
+        property alias iconRotation: _icon.rotation
+        readonly property bool hovered: _area.containsMouse
+        readonly property bool pressed: _area.pressed
+        property color hoverColor: _area.pressed ? Theme.bgInputFocus : Theme.bgHover
+        property color idleColor: "transparent"
+        signal clicked()
+
+        width: 46; height: 36
+        color: _area.containsMouse ? hoverColor : idleColor
+        Behavior on color { ColorAnimation { duration: 100 } }
+
+        SvgIcon {
+            id: _icon
+            width: Theme.px(12); height: Theme.px(12)
+            anchors.centerIn: parent
+            color: parent.iconColor
+            Behavior on color { ColorAnimation { duration: 100 } }
+            Behavior on rotation { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+        }
+        MouseArea {
+            id: _area
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: parent.clicked()
+        }
+    }
+
     // Custom window control buttons pinned to the top-right corner, flush
     // against the window edge so the hover highlight bleeds to the border.
     Row {
@@ -156,160 +190,40 @@ ApplicationWindow {
         z: 10
         spacing: 0
 
-        // Always on top (pin)
-        Rectangle {
-            width: 46; height: 36
-            color: pinArea.containsMouse
-                   ? (pinArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
-                   : Backend.isAlwaysOnTop ? Theme.accentSoft : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
-
-            SvgIcon {
-                source: Theme.iconThumbtack
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: Backend.isAlwaysOnTop ? Theme.accent
-                     : pinArea.containsMouse ? Theme.textPrimary : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-                rotation: Backend.isAlwaysOnTop ? 0 : 30
-                Behavior on rotation { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
-            }
-            MouseArea {
-                id: pinArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: Backend.toggleAlwaysOnTop()
-            }
+        ChromeButton {
+            iconSource: Theme.iconThumbtack
+            idleColor: Backend.isAlwaysOnTop ? Theme.accentSoft : "transparent"
+            iconColor: Backend.isAlwaysOnTop ? Theme.accent
+                     : hovered ? Theme.textPrimary : Theme.textMuted
+            iconRotation: Backend.isAlwaysOnTop ? 0 : 30
+            onClicked: Backend.toggleAlwaysOnTop()
         }
-
-        // Lock vault
-        Rectangle {
-            width: 46; height: 36
-            color: lockArea.containsMouse
-                   ? (lockArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
-                   : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
+        ChromeButton {
+            iconSource: Backend.passwordSet ? Theme.iconLockOpen : Theme.iconLock
+            iconColor: hovered && Backend.passwordSet ? Theme.textWarning : Theme.textMuted
             opacity: Backend.passwordSet ? 1.0 : 0.4
-
-            SvgIcon {
-                source: Backend.passwordSet ? Theme.iconLockOpen : Theme.iconLock
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: lockArea.containsMouse && Backend.passwordSet
-                       ? Theme.textWarning : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-            }
-            MouseArea {
-                id: lockArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Backend.passwordSet ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: if (Backend.passwordSet) Backend.lockVault()
-            }
+            onClicked: if (Backend.passwordSet) Backend.lockVault()
         }
-
-        // CLI mode
-        Rectangle {
-            width: 46; height: 36
-            color: cliArea.containsMouse
-                   ? (cliArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
-                   : Backend.isCliMode ? Theme.accentSoft : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
-
-            SvgIcon {
-                source: Theme.iconTerminal
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: Backend.isCliMode ? Theme.accent
-                     : cliArea.containsMouse ? Theme.textPrimary : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-            }
-            MouseArea {
-                id: cliArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: Backend.toggleCliMode()
-            }
+        ChromeButton {
+            iconSource: Theme.iconTerminal
+            idleColor: Backend.isCliMode ? Theme.accentSoft : "transparent"
+            iconColor: Backend.isCliMode ? Theme.accent
+                     : hovered ? Theme.textPrimary : Theme.textMuted
+            onClicked: Backend.toggleCliMode()
         }
-
-        // Compact mode
-        Rectangle {
-            width: 46; height: 36
-            color: compactArea.containsMouse
-                   ? (compactArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
-                   : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
-
-            SvgIcon {
-                source: Backend.isCompact ? Theme.iconExpand : Theme.iconCompress
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: compactArea.containsMouse ? Theme.textPrimary : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-            }
-            MouseArea {
-                id: compactArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: Backend.toggleCompact()
-            }
+        ChromeButton {
+            iconSource: Backend.isCompact ? Theme.iconExpand : Theme.iconCompress
+            onClicked: Backend.toggleCompact()
         }
-
-        // Minimize
-        Rectangle {
-            width: 46; height: 36
-            color: minimizeArea.containsMouse
-                   ? (minimizeArea.pressed ? Theme.bgInputFocus : Theme.bgHover)
-                   : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
-
-            SvgIcon {
-                source: Theme.iconChevronDown
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: minimizeArea.containsMouse ? Theme.textPrimary : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-            }
-            MouseArea {
-                id: minimizeArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: window.showMinimized()
-            }
+        ChromeButton {
+            iconSource: Theme.iconChevronDown
+            onClicked: window.showMinimized()
         }
-
-        // Close
-        Rectangle {
-            width: 46; height: 36
-            color: closeArea.containsMouse
-                   ? (closeArea.pressed ? "#b22a1c" : "#c42b1c")
-                   : "transparent"
-            Behavior on color { ColorAnimation { duration: 100 } }
-
-            SvgIcon {
-                source: Theme.iconPowerOff
-                width: Theme.px(12)
-                height: Theme.px(12)
-                anchors.centerIn: parent
-                color: closeArea.containsMouse ? "#ffffff" : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: 100 } }
-            }
-            MouseArea {
-                id: closeArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: window.close()
-            }
+        ChromeButton {
+            iconSource: Theme.iconPowerOff
+            hoverColor: pressed ? "#b22a1c" : "#c42b1c"
+            iconColor: hovered ? "#ffffff" : Theme.textMuted
+            onClicked: window.close()
         }
     }
 
@@ -416,7 +330,7 @@ ApplicationWindow {
             SearchBar {
                 Layout.fillWidth: true
                 visible: !Backend.isCliMode
-                onTextChanged: Backend.searchFilter = text
+                onSearchRequested: function(text) { Backend.searchFilter = text }
             }
 
             // Toggle-select: clicking the same row deselects it.

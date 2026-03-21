@@ -1,8 +1,19 @@
 #include "FileOperations.h"
 
+#include "Clipboard.h"
+#include "Console.h"
+#include "Utils.h"
+
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+
 #include <bit>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <iostream>
+#include <iterator>
+#include <semaphore>
 
 namespace seal
 {
@@ -50,10 +61,9 @@ bool FileOperations::encryptFileInPlace(const std::string& path, const SecurePwd
     // Wipe plaintext from memory as soon as encryption is done.
     seal::Cryptography::cleanseString(plain);
 
-    // Atomic write pattern: write ciphertext to a .tmp file first, then
+    // Atomic write pattern: Write ciphertext to a .tmp file first, then
     // atomically rename it over the original. This ensures the original
-    // file is never left in a half-written state (e.g. on disk-full or
-    // crash), because MoveFileExA is an atomic replace on NTFS.
+    // file is never left in a half-written state.
     std::string tmpPath = path + ".tmp";
     std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
     if (!out)
@@ -96,8 +106,7 @@ bool FileOperations::decryptFileInPlace(const std::string& path, const SecurePwd
     {
         auto plain = seal::Cryptography::decryptPacket(std::span<const unsigned char>(blob), pwd);
 
-        // Atomic write pattern (same as encryptFileInPlace): write to .tmp,
-        // then rename over the original so we never corrupt the source file.
+        // Atomic write pattern (same as encryptFileInPlace)
         std::string tmpPath = path + ".tmp";
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
         if (!out)
@@ -124,6 +133,129 @@ bool FileOperations::decryptFileInPlace(const std::string& path, const SecurePwd
         if (!MoveFileExA(tmpPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
         {
             std::cerr << "(decrypt) cannot replace original: " << path << "\n";
+            DeleteFileA(tmpPath.c_str());
+            return false;
+        }
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "(decrypt) " << e.what() << "\n";
+        return false;
+    }
+}
+
+template <secure_password SecurePwd>
+bool FileOperations::encryptFileTo(const std::string& srcPath,
+                                   const std::string& dstPath,
+                                   const SecurePwd& pwd)
+{
+    // Use streaming path for files larger than FILE_CHUNK to avoid
+    // loading the entire file into memory.
+    {
+        std::error_code ec;
+        auto fileSize = std::filesystem::file_size(srcPath, ec);
+        if (!ec && fileSize > seal::cfg::FILE_CHUNK)
+        {
+            return encryptFileStreaming(srcPath, dstPath, pwd);
+        }
+    }
+
+    std::ifstream in(srcPath, std::ios::binary);
+    if (!in)
+    {
+        std::cerr << "(encrypt) cannot open: " << srcPath << "\n";
+        return false;
+    }
+    std::vector<unsigned char> plain((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    auto packet = seal::Cryptography::encryptPacket(std::span<const unsigned char>(plain), pwd);
+    seal::Cryptography::cleanseString(plain);
+
+    // Atomic write: ciphertext -> dstPath.tmp -> rename to dstPath.
+    // The source file is never modified.
+    std::string tmpPath = dstPath + ".tmp";
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        std::cerr << "(encrypt) cannot write temp file: " << tmpPath << "\n";
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(packet.data()), (std::streamsize)packet.size());
+    out.flush();
+    if (!out)
+    {
+        std::cerr << "(encrypt) write failed: " << tmpPath << "\n";
+        out.close();
+        DeleteFileA(tmpPath.c_str());
+        return false;
+    }
+    out.close();
+
+    if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+    {
+        std::cerr << "(encrypt) cannot rename to destination: " << dstPath << "\n";
+        DeleteFileA(tmpPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+template <secure_password SecurePwd>
+bool FileOperations::decryptFileTo(const std::string& srcPath,
+                                   const std::string& dstPath,
+                                   const SecurePwd& pwd)
+{
+    // Use streaming path for files larger than FILE_CHUNK + framing overhead
+    // to avoid loading the entire file into memory.
+    {
+        constexpr size_t kFramingOverhead =
+            seal::cfg::AAD_LEN + seal::cfg::SALT_LEN + seal::cfg::IV_LEN + seal::cfg::TAG_LEN;
+        std::error_code ec;
+        auto fileSize = std::filesystem::file_size(srcPath, ec);
+        if (!ec && fileSize > seal::cfg::FILE_CHUNK + kFramingOverhead)
+        {
+            return decryptFileStreaming(srcPath, dstPath, pwd);
+        }
+    }
+
+    std::ifstream in(srcPath, std::ios::binary);
+    if (!in)
+    {
+        std::cerr << "(decrypt) cannot open: " << srcPath << "\n";
+        return false;
+    }
+    std::vector<unsigned char> blob((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    try
+    {
+        auto plain = seal::Cryptography::decryptPacket(std::span<const unsigned char>(blob), pwd);
+
+        // Atomic write: plaintext -> dstPath.tmp -> rename to dstPath.
+        // The source file is never modified.
+        std::string tmpPath = dstPath + ".tmp";
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out)
+        {
+            std::cerr << "(decrypt) cannot write temp file: " << tmpPath << "\n";
+            seal::Cryptography::cleanseString(plain);
+            return false;
+        }
+        out.write(reinterpret_cast<const char*>(plain.data()), (std::streamsize)plain.size());
+        out.flush();
+        seal::Cryptography::cleanseString(plain);
+        if (!out)
+        {
+            std::cerr << "(decrypt) write failed: " << tmpPath << "\n";
+            out.close();
+            DeleteFileA(tmpPath.c_str());
+            return false;
+        }
+        out.close();
+
+        if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+        {
+            std::cerr << "(decrypt) cannot rename to destination: " << dstPath << "\n";
             DeleteFileA(tmpPath.c_str());
             return false;
         }
@@ -170,9 +302,7 @@ seal::secure_string<seal::locked_allocator<char>> FileOperations::decryptLine(
 
 // Parse a flat string of colon-delimited triples separated by commas or
 // newlines.  Expected format: "svc1:user1:pass1,svc2:user2:pass2\n...".
-// Each token must contain EXACTLY 2 colons (3 fields). Fewer means the
-// data is incomplete; more means ambiguous field boundaries. Any violation
-// fails the entire parse so callers get all-or-nothing semantics.
+// Each token must contain EXACTLY 2 colons (3 fields).
 template <class A>
 bool FileOperations::parseTriples(std::string_view plain,
                                   std::vector<seal::secure_triplet16<A>>& out)
@@ -180,7 +310,7 @@ bool FileOperations::parseTriples(std::string_view plain,
     out.clear();
     std::string tok;
 
-    // flush: validate and consume one accumulated token.
+    // Flush: Validate and consume one accumulated token.
     auto flush = [&](std::string& t) -> bool
     {
         std::string s = seal::utils::trim(t);
@@ -241,6 +371,13 @@ bool FileOperations::parseTriples(std::string_view plain,
     }
     return !out.empty();
 }
+
+namespace
+{
+// Global concurrency cap for processDirectory. Limits total parallel file
+// encrypt/decrypt operations across all recursive subdirectory traversals.
+std::counting_semaphore<16> s_ProcessSemaphore{16};
+}  // namespace
 
 // Walk a directory with FindFirstFileA/FindNextFileA, encrypting or
 // decrypting every file based on its .seal extension (see processFilePath).
@@ -304,19 +441,27 @@ bool FileOperations::processDirectory(const std::string& dir,
             if (recurse)
             {
                 futures.push_back(std::async(std::launch::async,
-                                             FileOperations::processDirectory<SecurePwd>,
-                                             full,
-                                             std::ref(password),
-                                             true));
+                                             [full, &password]() -> bool
+                                             {
+                                                 s_ProcessSemaphore.acquire();
+                                                 bool r = FileOperations::processDirectory(
+                                                     full, password, true);
+                                                 s_ProcessSemaphore.release();
+                                                 return r;
+                                             }));
             }
             continue;
         }
 
         // Launch each file encrypt/decrypt on the thread pool.
         futures.push_back(std::async(std::launch::async,
-                                     FileOperations::processFilePath<SecurePwd>,
-                                     full,
-                                     std::ref(password)));
+                                     [full, &password]() -> bool
+                                     {
+                                         s_ProcessSemaphore.acquire();
+                                         bool r = FileOperations::processFilePath(full, password);
+                                         s_ProcessSemaphore.release();
+                                         return r;
+                                     }));
         ++total;
 
         if (futures.size() >= MAX_CONCURRENT)
@@ -337,8 +482,7 @@ bool FileOperations::processDirectory(const std::string& dir,
 
 // Decide whether to encrypt or decrypt a single path based on its extension.
 // Files ending in ".seal" are decrypted (extension removed); all others are
-// encrypted (extension appended). This toggle means running the same command
-// twice round-trips a file back to its original state.
+// encrypted (extension appended).
 template <secure_password SecurePwd>
 bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& password)
 {
@@ -376,19 +520,12 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
     {
         // Decrypt: strip the .seal extension to restore the original filename.
         std::string newName = seal::utils::strip_ext_ci(t, std::string_view{".seal"});
-        bool success = FileOperations::decryptFileInPlace(t, password);
+        bool success = FileOperations::decryptFileTo(t, newName, password);
 
         if (success)
         {
-            if (MoveFileExA(t.c_str(), newName.c_str(), MOVEFILE_REPLACE_EXISTING))
-            {
-                std::cout << "(decrypted) " << t << " -> " << newName << "\n";
-            }
-            else
-            {
-                std::cerr << "(decrypt) failed to rename: " << t << " -> " << newName << "\n";
-                return false;
-            }
+            DeleteFileA(t.c_str());
+            std::cout << "(decrypted) " << t << " -> " << newName << "\n";
         }
         return success;
     }
@@ -396,19 +533,12 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
     {
         // Encrypt: append .seal so the file is recognized as encrypted later.
         std::string newName = seal::utils::add_ext(t, std::string_view{".seal"});
-        bool success = FileOperations::encryptFileInPlace(t, password);
+        bool success = FileOperations::encryptFileTo(t, newName, password);
 
         if (success)
         {
-            if (MoveFileExA(t.c_str(), newName.c_str(), MOVEFILE_REPLACE_EXISTING))
-            {
-                std::cout << "(encrypted) " << t << " -> " << newName << "\n";
-            }
-            else
-            {
-                std::cerr << "(encrypt) failed to rename: " << t << " -> " << newName << "\n";
-                return false;
-            }
+            DeleteFileA(t.c_str());
+            std::cout << "(encrypted) " << t << " -> " << newName << "\n";
         }
         return success;
     }
@@ -416,9 +546,7 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
 
 // Decrypt a batch of hex-encoded ciphertext tokens. Each decrypted result is
 // tested against the colon-delimited triple format. If it parses as triples,
-// they are aggregated into aggTriples for structured display. Otherwise the
-// plaintext is treated as opaque data: copied to the clipboard (with a TTL)
-// and collected in otherPlain for raw output.
+// they are aggregated into aggTriples for structured display.
 template <secure_password SecurePwd>
 static void decryptHexTokens(const std::vector<std::string>& hexTokens,
                              const SecurePwd& password,
@@ -454,15 +582,15 @@ static void decryptHexTokens(const std::vector<std::string>& hexTokens,
     }
 }
 
-// Print decrypted triples to the console.  In uncensored mode the full
-// "service:user:pass" text is printed.  In censored (default) mode, the
+// Print decrypted triples to the console. In uncensored mode the full
+// "service:user:pass" text is printed. In censored (default) mode, the
 // password fields are masked with asterisks and the user clicks to copy
 // individual values via the interactive masked-output UI.
 static void displayTriples(std::vector<seal::secure_triplet16_t>& aggTriples, bool uncensored)
 {
     if (uncensored)
     {
-        // Uncensored: dump all triples comma-separated in plaintext.
+        // Uncensored: Dump all triples comma-separated in plaintext.
         std::ostringstream oss;
         for (size_t i = 0; i < aggTriples.size(); ++i)
         {
@@ -557,8 +685,6 @@ void FileOperations::processBatch(const std::vector<std::string>& lines,
 
 // Read all of stdin as binary, encrypt, and write raw ciphertext to stdout.
 // Designed for shell pipe integration, e.g.: cat secret | seal --encrypt | ...
-// stdin/stdout must be in binary mode (set by the caller) so that Windows
-// CRLF translation does not corrupt the ciphertext byte stream.
 template <secure_password SecurePwd>
 bool FileOperations::streamEncrypt(const SecurePwd& password)
 {
@@ -600,7 +726,6 @@ bool FileOperations::streamEncrypt(const SecurePwd& password)
 // Inverse of streamEncrypt: read raw ciphertext from stdin, decrypt, and
 // write plaintext to stdout. Used for shell pipe decryption, e.g.:
 //   cat secret.seal | seal --decrypt > secret.txt
-// Same binary-mode requirement as streamEncrypt.
 template <secure_password SecurePwd>
 bool FileOperations::streamDecrypt(const SecurePwd& password)
 {
@@ -643,10 +768,8 @@ bool FileOperations::shredFile(const std::string& path)
 {
     // Open with FILE_FLAG_WRITE_THROUGH to bypass the filesystem write cache
     // and push data directly to the storage controller. This gives a stronger
-    // (though still not absolute) guarantee that overwrite passes hit the same
-    // physical sectors as the original data. On SSDs with wear-leveling or
-    // copy-on-write filesystems (e.g. ReFS), the controller may remap sectors
-    // regardless -- full disk encryption is the only complete mitigation there.
+    // guarantee that overwrite passes hit the same physical sectors as
+    // the original data.
     HANDLE hFile = CreateFileA(path.c_str(),
                                GENERIC_READ | GENERIC_WRITE,
                                0,
@@ -752,19 +875,346 @@ std::string FileOperations::hashFile(const std::string& path)
     return seal::utils::to_hex(std::span<const unsigned char>(hash, hashLen));
 }
 
+// Streaming encryption: reads the source file in cfg::FILE_CHUNK increments,
+// feeds each chunk to EVP_EncryptUpdate, and writes ciphertext incrementally.
+// The wire format is identical to encryptPacket (AAD | salt | IV | ct | tag)
+// so the output is interoperable with all existing decrypt paths.
+template <secure_password SecurePwd>
+bool FileOperations::encryptFileStreaming(const std::string& srcPath,
+                                          const std::string& dstPath,
+                                          const SecurePwd& pwd)
+{
+    std::ifstream in(srcPath, std::ios::binary);
+    if (!in)
+    {
+        std::cerr << "(encrypt-stream) cannot open: " << srcPath << "\n";
+        return false;
+    }
+
+    // Generate salt and IV
+    std::vector<unsigned char> salt(seal::cfg::SALT_LEN);
+    seal::Cryptography::opensslCheck(RAND_bytes(salt.data(), (int)salt.size()),
+                                     "RAND_bytes(salt) failed");
+    std::vector<unsigned char> iv(seal::cfg::IV_LEN);
+    seal::Cryptography::opensslCheck(RAND_bytes(iv.data(), (int)iv.size()),
+                                     "RAND_bytes(iv) failed");
+
+    auto key = seal::Cryptography::deriveKey(pwd, std::span<const unsigned char>(salt));
+
+    seal::EvpCipherCtx ctx;
+    seal::Cryptography::opensslCheck(
+        EVP_EncryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
+        "EncryptInit(cipher) failed");
+    seal::Cryptography::opensslCheck(
+        EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr),
+        "SET_IVLEN failed");
+    seal::Cryptography::opensslCheck(
+        EVP_EncryptInit_ex(ctx.p, nullptr, nullptr, key.data(), iv.data()),
+        "EncryptInit(key/iv) failed");
+
+    // Feed AAD
+    std::span<const unsigned char> aad = seal::Cryptography::aadSpan();
+    if (!aad.empty())
+    {
+        int tmp = 0;
+        seal::Cryptography::opensslCheck(
+            EVP_EncryptUpdate(ctx.p, nullptr, &tmp, aad.data(), (int)aad.size()),
+            "EncryptUpdate(AAD) failed");
+    }
+
+    // Open output via atomic tmp file
+    std::string tmpPath = dstPath + ".tmp";
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        std::cerr << "(encrypt-stream) cannot write temp file: " << tmpPath << "\n";
+        seal::Cryptography::cleanseString(key);
+        return false;
+    }
+
+    // Write header: AAD | salt | IV
+    if (!aad.empty())
+    {
+        out.write(reinterpret_cast<const char*>(aad.data()), (std::streamsize)aad.size());
+    }
+    out.write(reinterpret_cast<const char*>(salt.data()), (std::streamsize)salt.size());
+    out.write(reinterpret_cast<const char*>(iv.data()), (std::streamsize)iv.size());
+
+    // Encrypt in chunks
+    std::vector<unsigned char> plainBuf(seal::cfg::FILE_CHUNK);
+    std::vector<unsigned char> ctBuf(seal::cfg::FILE_CHUNK + 16);  // block slop
+    bool ioOk = true;
+
+    while (in)
+    {
+        in.read(reinterpret_cast<char*>(plainBuf.data()), (std::streamsize)plainBuf.size());
+        auto bytesRead = static_cast<size_t>(in.gcount());
+        if (bytesRead == 0)
+            break;
+
+        int outlen = 0;
+        seal::Cryptography::opensslCheck(
+            EVP_EncryptUpdate(
+                ctx.p, ctBuf.data(), &outlen, plainBuf.data(), static_cast<int>(bytesRead)),
+            "EncryptUpdate(PT) failed");
+
+        SecureZeroMemory(plainBuf.data(), bytesRead);
+        out.write(reinterpret_cast<const char*>(ctBuf.data()), outlen);
+        if (!out)
+        {
+            ioOk = false;
+            break;
+        }
+    }
+    in.close();
+
+    if (ioOk)
+    {
+        // Finalize
+        int fin = 0;
+        seal::Cryptography::opensslCheck(EVP_EncryptFinal_ex(ctx.p, ctBuf.data(), &fin),
+                                         "EncryptFinal failed");
+        if (fin > 0)
+        {
+            out.write(reinterpret_cast<const char*>(ctBuf.data()), fin);
+        }
+
+        // Write GCM tag
+        std::vector<unsigned char> tag(seal::cfg::TAG_LEN);
+        seal::Cryptography::opensslCheck(
+            EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_GET_TAG, (int)tag.size(), tag.data()),
+            "GET_TAG failed");
+        out.write(reinterpret_cast<const char*>(tag.data()), (std::streamsize)tag.size());
+        out.flush();
+        ioOk = out.good();
+    }
+
+    seal::Cryptography::cleanseString(key);
+    SecureZeroMemory(plainBuf.data(), plainBuf.size());
+    SecureZeroMemory(ctBuf.data(), ctBuf.size());
+    out.close();
+
+    if (ioOk)
+    {
+        if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+        {
+            std::cerr << "(encrypt-stream) cannot rename to destination: " << dstPath << "\n";
+            DeleteFileA(tmpPath.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    std::cerr << "(encrypt-stream) write error: " << tmpPath << "\n";
+    DeleteFileA(tmpPath.c_str());
+    return false;
+}
+
+// Streaming decryption: reads the GCM tag from the end of the file, then
+// processes ciphertext in cfg::FILE_CHUNK increments via EVP_DecryptUpdate.
+// Authentication is verified at EVP_DecryptFinal_ex; on failure the temp
+// file is deleted and no output is produced.
+template <secure_password SecurePwd>
+bool FileOperations::decryptFileStreaming(const std::string& srcPath,
+                                          const std::string& dstPath,
+                                          const SecurePwd& pwd)
+{
+    std::ifstream in(srcPath, std::ios::binary);
+    if (!in)
+    {
+        std::cerr << "(decrypt-stream) cannot open: " << srcPath << "\n";
+        return false;
+    }
+
+    // Determine file size
+    in.seekg(0, std::ios::end);
+    auto fileSize = static_cast<size_t>(in.tellg());
+    in.seekg(0, std::ios::beg);
+
+    std::span<const unsigned char> aadExpected = seal::Cryptography::aadSpan();
+    size_t headerSize = aadExpected.size() + seal::cfg::SALT_LEN + seal::cfg::IV_LEN;
+
+    if (fileSize < headerSize + seal::cfg::TAG_LEN)
+    {
+        std::cerr << "(decrypt-stream) file too short: " << srcPath << "\n";
+        return false;
+    }
+
+    // Read and verify AAD header
+    if (!aadExpected.empty())
+    {
+        std::vector<unsigned char> aadBuf(aadExpected.size());
+        in.read(reinterpret_cast<char*>(aadBuf.data()), (std::streamsize)aadBuf.size());
+        if (std::memcmp(aadBuf.data(), aadExpected.data(), aadExpected.size()) != 0)
+        {
+            std::cerr << "(decrypt-stream) bad AAD header: " << srcPath << "\n";
+            return false;
+        }
+    }
+
+    // Read salt and IV
+    std::vector<unsigned char> salt(seal::cfg::SALT_LEN);
+    in.read(reinterpret_cast<char*>(salt.data()), (std::streamsize)salt.size());
+    std::vector<unsigned char> iv(seal::cfg::IV_LEN);
+    in.read(reinterpret_cast<char*>(iv.data()), (std::streamsize)iv.size());
+
+    size_t ctLen = fileSize - headerSize - seal::cfg::TAG_LEN;
+
+    // Read the GCM tag from the end of the file, then seek back to ciphertext start
+    auto ctStartPos = in.tellg();
+    in.seekg(-(std::streamoff)seal::cfg::TAG_LEN, std::ios::end);
+    std::vector<unsigned char> tag(seal::cfg::TAG_LEN);
+    in.read(reinterpret_cast<char*>(tag.data()), (std::streamsize)tag.size());
+    in.seekg(ctStartPos);
+
+    try
+    {
+        auto key = seal::Cryptography::deriveKey(pwd, std::span<const unsigned char>(salt));
+
+        seal::EvpCipherCtx ctx;
+        seal::Cryptography::opensslCheck(
+            EVP_DecryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
+            "DecryptInit(cipher) failed");
+        seal::Cryptography::opensslCheck(
+            EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)seal::cfg::IV_LEN, nullptr),
+            "SET_IVLEN failed");
+        seal::Cryptography::opensslCheck(
+            EVP_DecryptInit_ex(ctx.p, nullptr, nullptr, key.data(), iv.data()),
+            "DecryptInit(key/iv) failed");
+
+        // Feed AAD
+        if (!aadExpected.empty())
+        {
+            int tmp = 0;
+            seal::Cryptography::opensslCheck(
+                EVP_DecryptUpdate(
+                    ctx.p, nullptr, &tmp, aadExpected.data(), (int)aadExpected.size()),
+                "DecryptUpdate(AAD) failed");
+        }
+
+        // Open output via atomic tmp file
+        std::string tmpPath = dstPath + ".tmp";
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out)
+        {
+            std::cerr << "(decrypt-stream) cannot write temp file: " << tmpPath << "\n";
+            seal::Cryptography::cleanseString(key);
+            return false;
+        }
+
+        // Decrypt in chunks
+        std::vector<unsigned char> ctBuf(seal::cfg::FILE_CHUNK);
+        std::vector<unsigned char> plainBuf(seal::cfg::FILE_CHUNK + 16);
+        size_t remaining = ctLen;
+        bool ioOk = true;
+
+        while (remaining > 0)
+        {
+            size_t toRead = std::min(remaining, seal::cfg::FILE_CHUNK);
+            in.read(reinterpret_cast<char*>(ctBuf.data()), (std::streamsize)toRead);
+            auto bytesRead = static_cast<size_t>(in.gcount());
+            if (bytesRead == 0)
+                break;
+
+            int outlen = 0;
+            seal::Cryptography::opensslCheck(
+                EVP_DecryptUpdate(
+                    ctx.p, plainBuf.data(), &outlen, ctBuf.data(), static_cast<int>(bytesRead)),
+                "DecryptUpdate(CT) failed");
+
+            out.write(reinterpret_cast<const char*>(plainBuf.data()), outlen);
+            SecureZeroMemory(plainBuf.data(), static_cast<size_t>(outlen));
+            if (!out)
+            {
+                ioOk = false;
+                break;
+            }
+            remaining -= bytesRead;
+        }
+        in.close();
+
+        if (!ioOk)
+        {
+            seal::Cryptography::cleanseString(key);
+            SecureZeroMemory(ctBuf.data(), ctBuf.size());
+            SecureZeroMemory(plainBuf.data(), plainBuf.size());
+            out.close();
+            DeleteFileA(tmpPath.c_str());
+            return false;
+        }
+
+        // Set tag and finalize (authentication check)
+        seal::Cryptography::opensslCheck(
+            EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tag.data()),
+            "SET_TAG failed");
+
+        unsigned char finBuf[16]{};
+        int fin = 0;
+        int ok = EVP_DecryptFinal_ex(ctx.p, finBuf, &fin);
+        SecureZeroMemory(finBuf, sizeof(finBuf));
+        seal::Cryptography::cleanseString(key);
+        SecureZeroMemory(ctBuf.data(), ctBuf.size());
+        SecureZeroMemory(plainBuf.data(), plainBuf.size());
+
+        if (ok != 1)
+        {
+            std::cerr << "(decrypt-stream) authentication failed: " << srcPath << "\n";
+            out.close();
+            DeleteFileA(tmpPath.c_str());
+            return false;
+        }
+
+        if (fin > 0)
+        {
+            out.write(reinterpret_cast<const char*>(finBuf), fin);
+        }
+        out.flush();
+        ioOk = out.good();
+        out.close();
+
+        if (ioOk)
+        {
+            if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+            {
+                std::cerr << "(decrypt-stream) cannot rename to destination: " << dstPath << "\n";
+                DeleteFileA(tmpPath.c_str());
+                return false;
+            }
+            return true;
+        }
+
+        std::cerr << "(decrypt-stream) write error: " << tmpPath << "\n";
+        DeleteFileA(tmpPath.c_str());
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "(decrypt-stream) " << e.what() << "\n";
+        return false;
+    }
+}
+
 using SecNarrow = seal::secure_string<>;
 using SecWide = seal::basic_secure_string<wchar_t>;
 
 // Explicit template instantiations for the two password types (narrow and
-// wide secure strings).  These are required because the template definitions
-// live in this .cpp file rather than the header, so the compiler cannot
-// generate them on demand when other translation units call these functions.
-// Without these lines the linker would report unresolved-symbol errors.
+// wide secure strings). Without these lines the linker would report
+// unresolved-symbol errors.
 template bool FileOperations::encryptFileInPlace(const std::string&, const SecNarrow&);
 template bool FileOperations::encryptFileInPlace(const std::string&, const SecWide&);
 
 template bool FileOperations::decryptFileInPlace(const std::string&, const SecNarrow&);
 template bool FileOperations::decryptFileInPlace(const std::string&, const SecWide&);
+
+template bool FileOperations::encryptFileTo(const std::string&,
+                                            const std::string&,
+                                            const SecNarrow&);
+template bool FileOperations::encryptFileTo(const std::string&, const std::string&, const SecWide&);
+
+template bool FileOperations::decryptFileTo(const std::string&,
+                                            const std::string&,
+                                            const SecNarrow&);
+template bool FileOperations::decryptFileTo(const std::string&, const std::string&, const SecWide&);
 
 template std::string FileOperations::encryptLine(const std::string&, const SecNarrow&);
 template std::string FileOperations::encryptLine(const std::string&, const SecWide&);
@@ -781,6 +1231,20 @@ template bool FileOperations::processDirectory(const std::string&, const SecWide
 template bool FileOperations::processFilePath(const std::string&, const SecWide&);
 
 template void FileOperations::processBatch(const std::vector<std::string>&, bool, const SecWide&);
+
+template bool FileOperations::encryptFileStreaming(const std::string&,
+                                                   const std::string&,
+                                                   const SecNarrow&);
+template bool FileOperations::encryptFileStreaming(const std::string&,
+                                                   const std::string&,
+                                                   const SecWide&);
+
+template bool FileOperations::decryptFileStreaming(const std::string&,
+                                                   const std::string&,
+                                                   const SecNarrow&);
+template bool FileOperations::decryptFileStreaming(const std::string&,
+                                                   const std::string&,
+                                                   const SecWide&);
 
 template bool FileOperations::streamEncrypt(const SecWide&);
 template bool FileOperations::streamDecrypt(const SecWide&);

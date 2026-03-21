@@ -23,6 +23,7 @@ Popup {
     property string initialUsername: ""
     property string initialPassword: ""
     property int editIndex: -1  // -1 = add mode, >= 0 = record index to edit
+    property bool _showValidation: false
 
     signal accepted(string service, string username, string password, int editIdx)
 
@@ -115,7 +116,8 @@ Popup {
                     radius: Theme.radiusSmall
                     color: serviceField.activeFocus ? Theme.bgInputFocus : Theme.bgInput
                     border.width: 1
-                    border.color: serviceField.activeFocus ? Theme.borderFocus : Theme.borderInput
+                    border.color: root._showValidation && serviceField.text.trim() === "" ? Theme.textError
+                                 : serviceField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
 
                 Keys.onReturnPressed: root.submitForm()
@@ -152,7 +154,8 @@ Popup {
                     radius: Theme.radiusSmall
                     color: usernameField.activeFocus ? Theme.bgInputFocus : Theme.bgInput
                     border.width: 1
-                    border.color: usernameField.activeFocus ? Theme.borderFocus : Theme.borderInput
+                    border.color: root._showValidation && usernameField.text.trim() === "" ? Theme.textError
+                                 : usernameField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
 
                 Keys.onReturnPressed: root.submitForm()
@@ -201,7 +204,8 @@ Popup {
                     radius: Theme.radiusSmall
                     color: passwordField.activeFocus ? Theme.bgInputFocus : Theme.bgInput
                     border.width: 1
-                    border.color: passwordField.activeFocus ? Theme.borderFocus : Theme.borderInput
+                    border.color: root._showValidation && passwordField.text === "" ? Theme.textError
+                                 : passwordField.activeFocus ? Theme.borderFocus : Theme.borderInput
                 }
 
                 // Qt.NoButton lets the MouseArea track hover state without intercepting
@@ -227,6 +231,19 @@ Popup {
                     }
                 }
             }
+        }
+
+        // Client-side validation hint shown after a failed submit attempt.
+        Text {
+            Layout.fillWidth: true
+            Layout.leftMargin: 24
+            Layout.rightMargin: 24
+            Layout.topMargin: 4
+            visible: root._showValidation
+            text: "All fields are required."
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.textError
         }
 
         RowLayout {
@@ -282,15 +299,7 @@ Popup {
             Button {
                 id: okButton
                 text: "OK"
-                onClicked: {
-                    root.accepted(
-                        serviceField.text.trim(),
-                        usernameField.text.trim(),
-                        passwordField.text,
-                        root.editIndex
-                    );
-                    root.close();
-                }
+                onClicked: root.submitForm()
 
                 HoverHandler { id: acctOkHover; cursorShape: Qt.PointingHandCursor }
 
@@ -330,14 +339,17 @@ Popup {
     onOpened: serviceField.forceActiveFocus()
 
     // Shared submit for OK click and Enter. Password not trimmed (preserves spaces).
+    // Validates all fields before accepting; shows red borders on empty fields.
     function submitForm() {
-        root.accepted(
-            serviceField.text.trim(),
-            usernameField.text.trim(),
-            passwordField.text,
-            root.editIndex
-        );
-        root.close();
+        var svc = serviceField.text.trim()
+        var usr = usernameField.text.trim()
+        var pwd = passwordField.text
+        if (svc === "" || usr === "" || pwd === "") {
+            _showValidation = true
+            return
+        }
+        root.accepted(svc, usr, pwd, root.editIndex)
+        root.close()
     }
 
     // Reset fields on open (blanks for add, pre-populated for edit).
@@ -347,5 +359,16 @@ Popup {
         passwordField.text = initialPassword;
     }
 
-    onAboutToShow: resetFields()
+    onAboutToShow: { _showValidation = false; resetFields() }
+
+    // Clear credential strings from QML property memory when the dialog
+    // closes so plaintext doesn't linger in Qt's heap for the session.
+    onClosed: {
+        initialService = ""
+        initialUsername = ""
+        initialPassword = ""
+        serviceField.text = ""
+        usernameField.text = ""
+        passwordField.text = ""
+    }
 }

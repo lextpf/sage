@@ -11,6 +11,17 @@ import QtQuick.Controls
 TextField {
     id: root
 
+    // Debounced search signal. Fires 200 ms after the last keystroke so C++
+    // model filtering is not triggered on every single character typed.
+    signal searchRequested(string text)
+
+    Timer {
+        id: _debounce
+        interval: 200
+        onTriggered: root.searchRequested(root.text)
+    }
+    onTextChanged: _debounce.restart()
+
     placeholderText: "Search credentials..."
     placeholderTextColor: Theme.textPlaceholder
     color: Theme.textPrimary

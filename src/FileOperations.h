@@ -1,15 +1,10 @@
 #pragma once
 
-#include "Clipboard.h"
-#include "Console.h"
 #include "Cryptography.h"
-#include "Utils.h"
 
-#include <filesystem>
-#include <fstream>
-#include <future>
-#include <iostream>
-#include <iterator>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace seal
 {
@@ -19,7 +14,7 @@ namespace seal
  * @brief Static utility class for file-level encryption, decryption,
  *        batch processing, and stream I/O operations.
  * @author Alex (https://github.com/lextpf)
- * @ingroup FileOperations
+ * @ingroup IO_FileOperations
  *
  * Wraps every high-level I/O path that moves data between disk (or
  * stdin/stdout) and the AES-256-GCM crypto core. All methods are
@@ -92,6 +87,44 @@ public:
     static bool decryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
+     * @brief Encrypt a file to a new destination without modifying the source.
+     *
+     * Reads the source file, encrypts with AES-256-GCM, and writes the result
+     * atomically to @p dstPath (via a `.tmp` intermediate). The source file at
+     * @p srcPath is never modified -- the caller should delete it only after
+     * this method returns `true`.
+     *
+     * @tparam SecurePwd Secure password container.
+     * @param srcPath Source file to read (left unmodified).
+     * @param dstPath Destination path for the encrypted output.
+     * @param pwd     Master password for key derivation.
+     * @return `true` on success, `false` on I/O or encryption error.
+     */
+    template <secure_password SecurePwd>
+    static bool encryptFileTo(const std::string& srcPath,
+                              const std::string& dstPath,
+                              const SecurePwd& pwd);
+
+    /**
+     * @brief Decrypt a file to a new destination without modifying the source.
+     *
+     * Reads the encrypted source file, decrypts with AES-256-GCM, and writes
+     * the plaintext atomically to @p dstPath. The source file at @p srcPath is
+     * never modified. On authentication failure the source is left intact and
+     * no output file is created.
+     *
+     * @tparam SecurePwd Secure password container.
+     * @param srcPath Encrypted source file to read (left unmodified).
+     * @param dstPath Destination path for the decrypted output.
+     * @param pwd     Master password for key derivation.
+     * @return `true` on success, `false` on I/O or authentication error.
+     */
+    template <secure_password SecurePwd>
+    static bool decryptFileTo(const std::string& srcPath,
+                              const std::string& dstPath,
+                              const SecurePwd& pwd);
+
+    /**
      * @brief Encrypt a UTF-8 string and return the result as a hex string.
      *
      * @tparam SecurePwd Secure password container.
@@ -117,6 +150,46 @@ public:
     template <secure_password SecurePwd>
     [[nodiscard]] static seal::secure_string<seal::locked_allocator<char>> decryptLine(
         const std::string& rawHex, const SecurePwd& pwd);
+
+    /**
+     * @brief Encrypt a file to a new destination using chunked streaming I/O.
+     *
+     * For files larger than `cfg::FILE_CHUNK` (1 MiB), reads the source in
+     * chunks and feeds them incrementally to AES-256-GCM via `EVP_EncryptUpdate`,
+     * avoiding loading the entire file into memory. The wire format is identical
+     * to `encryptPacket` so the output is interoperable with all existing decrypt
+     * paths. For small files, delegates to the single-shot `encryptFileTo` path.
+     *
+     * @tparam SecurePwd Secure password container.
+     * @param srcPath Source file to read (left unmodified).
+     * @param dstPath Destination path for the encrypted output.
+     * @param pwd     Master password for key derivation.
+     * @return `true` on success, `false` on I/O or encryption error.
+     */
+    template <secure_password SecurePwd>
+    static bool encryptFileStreaming(const std::string& srcPath,
+                                     const std::string& dstPath,
+                                     const SecurePwd& pwd);
+
+    /**
+     * @brief Decrypt a file to a new destination using chunked streaming I/O.
+     *
+     * For files larger than `cfg::FILE_CHUNK` (1 MiB) plus framing overhead,
+     * reads the ciphertext in chunks and feeds them incrementally to
+     * `EVP_DecryptUpdate`. The GCM authentication tag is read from the end of
+     * the file before the streaming pass begins. For small files, delegates to
+     * the single-shot `decryptFileTo` path.
+     *
+     * @tparam SecurePwd Secure password container.
+     * @param srcPath Encrypted source file to read (left unmodified).
+     * @param dstPath Destination path for the decrypted output.
+     * @param pwd     Master password for key derivation.
+     * @return `true` on success, `false` on I/O or authentication error.
+     */
+    template <secure_password SecurePwd>
+    static bool decryptFileStreaming(const std::string& srcPath,
+                                     const std::string& dstPath,
+                                     const SecurePwd& pwd);
 
     /**
      * @brief Compute the serialized wide-character length of a triple as `s:u:p`.
@@ -160,7 +233,7 @@ public:
      * `seal` binary itself. Each file is encrypted or decrypted based on
      * its `.seal` extension and renamed in place after successful I/O.
      * Subdirectories are processed in parallel via `std::async`
-     * (concurrency is bounded by the thread pool to `std::thread::hardware_concurrency()`).
+     * (concurrency is bounded by a fixed semaphore of 16 concurrent operations).
      *
      * @tparam SecurePwd Secure password container.
      * @param dir      Root directory path.

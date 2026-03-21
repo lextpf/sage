@@ -48,8 +48,11 @@ namespace seal
  */
 struct VaultRecord
 {
-    std::string platform;  ///< Cleartext platform name (in-memory only, UTF-8; decrypted from
-                           ///< encryptedPlatform on load)
+    /// Cleartext platform name (in-memory only, UTF-8; decrypted from encryptedPlatform on load).
+    /// Deliberately std::string (not secure_string): platform names are displayed in the vault
+    /// list view and used for string operations (.find(), .c_str(), fromUtf8). The locked-memory
+    /// discipline is reserved for actual secrets (passwords, usernames, master key).
+    std::string platform;
     std::vector<unsigned char> encryptedPlatform;  ///< AES-256-GCM packet of platform name
     std::vector<unsigned char> encryptedBlob;      ///< AES-256-GCM packet of "username\0password"
     bool dirty = false;                            ///< True if created or modified since last save

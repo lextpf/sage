@@ -23,10 +23,12 @@
  *      Repository:   https://github.com/lextpf/seal
  *      License:      MIT
  */
+#include "CliModes.h"
 #include "Clipboard.h"
 #include "Console.h"
 #include "Cryptography.h"
 #include "FileOperations.h"
+#include "PasswordGen.h"
 #include "ScopedDpapiUnprotect.h"
 #include "Utils.h"
 #include "Version.h"
@@ -48,39 +50,55 @@
 int RunQMLMode(int argc, char* argv[]);
 #endif
 
-// Parsed command-line options for mode dispatch.
+namespace
+{
+
+// Discriminated program mode.
+enum class Mode
+{
+    Gui,
+    Cli,
+    TextEncrypt,
+    TextDecrypt,
+    FileEncrypt,
+    FileDecrypt,
+    Import,
+    Export,
+    Gen,
+    Shred,
+    Hash,
+    Verify,
+    Wipe
+};
+
 struct ProgramOptions
 {
-    bool stringMode = false;
-    bool encryptMode = false;
-    bool decryptMode = false;
-    std::string stringData;
-    bool uiMode = false;
-    bool cliMode = false;
-    bool importMode = false;
-    std::string importData;
-    std::string importOutputPath;
-    bool exportMode = false;
-    std::string exportInputPath;
-    std::string exportOutputPath;
-    bool fileEncryptMode = false;
-    bool fileDecryptMode = false;
-    std::string fileInput;
-    std::string fileOutput;
-    bool genMode = false;
+    Mode mode = Mode::Gui;
+    bool modeExplicit = false;  // true once any mode flag is parsed
+    std::string inputPath;      // primary path or import data
+    std::string outputPath;     // secondary / destination path
+    std::string stringData;     // inline text for -e/-d
     int genLength = 20;
-    bool shredMode = false;
-    std::string shredPath;
-    bool hashMode = false;
-    std::string hashPath;
-    bool verifyMode = false;
-    std::string verifyPath;
-    bool wipeMode = false;
 };
+
+// Set the program mode, rejecting conflicts with any previously set mode.
+static bool trySetMode(ProgramOptions& opts, Mode newMode)
+{
+    if (opts.modeExplicit)
+    {
+        std::cerr << "Error: Cannot combine multiple modes\n";
+        return false;
+    }
+    opts.mode = newMode;
+    opts.modeExplicit = true;
+    return true;
+}
 
 // Alias for backwards compatibility with existing call sites in this file.
 template <class GuardT>
 using ScopedUnprotect = seal::ScopedDpapiUnprotect<GuardT>;
+
+}  // namespace
 
 static void printHelp()
 {
@@ -143,6 +161,22 @@ static bool isOptionToken(const char* token)
     return token && token[0] == '-' && token[1] != '\0';
 }
 
+// Parse a required path argument for a command. Returns false on missing arg.
+static bool parseRequiredPath(
+    int argc, char* argv[], int& i, ProgramOptions& opts, const char* cmdName, const char* usage)
+{
+    if (i + 1 < argc && !isOptionToken(argv[i + 1]))
+    {
+        opts.inputPath = argv[++i];
+        if (i + 1 < argc && !isOptionToken(argv[i + 1]))
+            opts.outputPath = argv[++i];
+        return true;
+    }
+    std::cerr << "Error: " << cmdName << " requires a file argument\n";
+    std::cerr << "Usage: " << usage << "\n";
+    return false;
+}
+
 // Returns: -1 = parsed OK (continue), 0 = help shown (exit 0), 1 = error (exit 1)
 static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
 {
@@ -151,36 +185,39 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
         std::string arg = argv[i];
         if (arg == "-e" || arg == "--text-encrypt")
         {
-            opts.stringMode = true;
-            opts.encryptMode = true;
+            if (!trySetMode(opts, Mode::TextEncrypt))
+                return 1;
             if (i + 1 < argc && !isOptionToken(argv[i + 1]))
                 opts.stringData = argv[++i];
         }
         else if (arg == "-d" || arg == "--text-decrypt")
         {
-            opts.stringMode = true;
-            opts.decryptMode = true;
+            if (!trySetMode(opts, Mode::TextDecrypt))
+                return 1;
             if (i + 1 < argc && !isOptionToken(argv[i + 1]))
                 opts.stringData = argv[++i];
         }
         else if (arg == "-u" || arg == "--ui")
         {
-            opts.uiMode = true;
+            if (!trySetMode(opts, Mode::Gui))
+                return 1;
         }
         else if (arg == "-c" || arg == "--cli")
         {
-            opts.cliMode = true;
+            if (!trySetMode(opts, Mode::Cli))
+                return 1;
         }
         else if (arg == "--import" || arg == "import")
         {
-            opts.importMode = true;
+            if (!trySetMode(opts, Mode::Import))
+                return 1;
             if (i + 1 < argc && !isOptionToken(argv[i + 1]))
             {
-                opts.importData = argv[++i];
+                opts.inputPath = argv[++i];
                 if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                    opts.importOutputPath = argv[++i];
+                    opts.outputPath = argv[++i];
                 else
-                    opts.importOutputPath = ".seal";
+                    opts.outputPath = ".seal";
             }
             else
             {
@@ -191,12 +228,13 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
         }
         else if (arg == "--export" || arg == "export")
         {
-            opts.exportMode = true;
+            if (!trySetMode(opts, Mode::Export))
+                return 1;
             if (i + 1 < argc && !isOptionToken(argv[i + 1]))
             {
-                opts.exportInputPath = argv[++i];
+                opts.inputPath = argv[++i];
                 if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                    opts.exportOutputPath = argv[++i];
+                    opts.outputPath = argv[++i];
             }
             else
             {
@@ -207,39 +245,22 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
         }
         else if (arg == "encrypt")
         {
-            opts.fileEncryptMode = true;
-            if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-            {
-                opts.fileInput = argv[++i];
-                if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                    opts.fileOutput = argv[++i];
-            }
-            else
-            {
-                std::cerr << "Error: encrypt requires a file argument\n";
-                std::cerr << "Usage: seal encrypt <file> [output]\n";
+            if (!trySetMode(opts, Mode::FileEncrypt))
                 return 1;
-            }
+            if (!parseRequiredPath(argc, argv, i, opts, "encrypt", "seal encrypt <file> [output]"))
+                return 1;
         }
         else if (arg == "decrypt")
         {
-            opts.fileDecryptMode = true;
-            if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-            {
-                opts.fileInput = argv[++i];
-                if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                    opts.fileOutput = argv[++i];
-            }
-            else
-            {
-                std::cerr << "Error: decrypt requires a file argument\n";
-                std::cerr << "Usage: seal decrypt <file> [output]\n";
+            if (!trySetMode(opts, Mode::FileDecrypt))
                 return 1;
-            }
+            if (!parseRequiredPath(argc, argv, i, opts, "decrypt", "seal decrypt <file> [output]"))
+                return 1;
         }
         else if (arg == "gen")
         {
-            opts.genMode = true;
+            if (!trySetMode(opts, Mode::Gen))
+                return 1;
             if (i + 1 < argc && !isOptionToken(argv[i + 1]))
             {
                 try
@@ -255,43 +276,29 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
         }
         else if (arg == "shred")
         {
-            opts.shredMode = true;
-            if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                opts.shredPath = argv[++i];
-            else
-            {
-                std::cerr << "Error: shred requires a file argument\n";
-                std::cerr << "Usage: seal shred <file>\n";
+            if (!trySetMode(opts, Mode::Shred))
                 return 1;
-            }
+            if (!parseRequiredPath(argc, argv, i, opts, "shred", "seal shred <file>"))
+                return 1;
         }
         else if (arg == "hash")
         {
-            opts.hashMode = true;
-            if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                opts.hashPath = argv[++i];
-            else
-            {
-                std::cerr << "Error: hash requires a file argument\n";
-                std::cerr << "Usage: seal hash <file>\n";
+            if (!trySetMode(opts, Mode::Hash))
                 return 1;
-            }
+            if (!parseRequiredPath(argc, argv, i, opts, "hash", "seal hash <file>"))
+                return 1;
         }
         else if (arg == "verify")
         {
-            opts.verifyMode = true;
-            if (i + 1 < argc && !isOptionToken(argv[i + 1]))
-                opts.verifyPath = argv[++i];
-            else
-            {
-                std::cerr << "Error: verify requires a file argument\n";
-                std::cerr << "Usage: seal verify <file.seal>\n";
+            if (!trySetMode(opts, Mode::Verify))
                 return 1;
-            }
+            if (!parseRequiredPath(argc, argv, i, opts, "verify", "seal verify <file.seal>"))
+                return 1;
         }
         else if (arg == "wipe")
         {
-            opts.wipeMode = true;
+            if (!trySetMode(opts, Mode::Wipe))
+                return 1;
         }
         else if (arg == "-v" || arg == "--version")
         {
@@ -310,43 +317,8 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
             return 1;
         }
     }
-
-    if (opts.uiMode && opts.cliMode)
-    {
-        std::cerr << "Error: Cannot specify both --ui and --cli\n";
-        return 1;
-    }
-    if (opts.encryptMode && opts.decryptMode)
-    {
-        std::cerr << "Error: Cannot specify both -e and -d\n";
-        return 1;
-    }
-    if (opts.importMode && opts.stringMode)
-    {
-        std::cerr << "Error: Cannot combine import with -e/-d\n";
-        return 1;
-    }
-    if (opts.exportMode && opts.stringMode)
-    {
-        std::cerr << "Error: Cannot combine export with -e/-d\n";
-        return 1;
-    }
-    if (opts.exportMode && opts.importMode)
-    {
-        std::cerr << "Error: Cannot combine export with import\n";
-        return 1;
-    }
-    if ((opts.fileEncryptMode || opts.fileDecryptMode) &&
-        (opts.stringMode || opts.importMode || opts.exportMode))
-    {
-        std::cerr << "Error: Cannot combine encrypt/decrypt with other modes\n";
-        return 1;
-    }
-    if (opts.fileEncryptMode && opts.fileDecryptMode)
-    {
-        std::cerr << "Error: Cannot specify both encrypt and decrypt\n";
-        return 1;
-    }
+    // No explicit validation block needed: trySetMode() rejects conflicts
+    // at parse time, and the Mode enum makes invalid combinations impossible.
     return -1;
 }
 
@@ -354,16 +326,23 @@ static int parseArguments(int argc, char* argv[], ProgramOptions& opts)
 // Returns 0 on success, 1 if a critical mitigation fails.
 static int initializeSecurity(bool allowDynamicCode)
 {
-    // Order matters: debugger check first (fail fast before any secrets load),
-    // then process mitigations (CFG, DEP, ASLR, dynamic-code policy), then
+    // Order matters: Debugger check first (fail fast before any secrets load),
+    // then process mitigations (Control Flow Guard, Data Execution Prevention,
+    // Address Space Layout Randomization, dynamic-code policy), then
     // heap/access hardening, and finally memory-lock privilege which is needed
     // before any secure_string allocations touch VirtualLock.
     seal::Cryptography::detectDebugger();
 
+    // Process mitigations are best-effort
     if (!seal::Cryptography::setSecureProcessMitigations(allowDynamicCode))
-        return 1;
+    {
+        std::cerr << "Warning: some process mitigations could not be applied "
+                  << "(this is expected in debug builds)\n";
+    }
     if (seal::Cryptography::isRemoteSession())
+    {
         return 1;
+    }
 
     seal::Cryptography::hardenHeap();
     seal::Cryptography::hardenProcessAccess();
@@ -442,6 +421,17 @@ static int parseImportEntries(
         if (secondColon == std::string::npos)
         {
             std::cerr << "Error: Invalid entry (missing second colon): " << token << "\n";
+            std::cerr << "Expected format: platform:username:password\n";
+            return 1;
+        }
+
+        // Reject entries with more than 2 colons: the format is strictly
+        // platform:username:password, so 3+ colons means ambiguous field
+        // boundaries that cannot be round-tripped through export/import.
+        if (token.find(':', secondColon + 1) != std::string::npos)
+        {
+            std::cerr << "Error: Too many colons in entry (fields must not contain ':'): " << token
+                      << "\n";
             std::cerr << "Expected format: platform:username:password\n";
             return 1;
         }
@@ -573,372 +563,81 @@ static int handleExportMode(const std::string& inputPath, const std::string& out
         return 0;
     }
 
-    // Build one comma-separated export string in the same format that --import accepts.
-    // SECURITY: fail immediately on the first decryption error. If we kept going,
-    // the number of successful decryptions before the error would leak how many
-    // records the vault contains (side-channel on wrong password).
-    // Pre-reserve to reduce intermediate reallocation copies of plaintext on
-    // the heap. Each record is roughly ~80 chars (platform:user:pass + comma).
-    std::string exportData;
-    exportData.reserve(records.size() * 80);
+    // Stream each credential directly to the output instead of accumulating
+    // all plaintext in a heap buffer. This limits plaintext exposure to one
+    // record at a time rather than the entire vault.
+    std::ofstream outFile;
+    std::ostream* out = &std::cout;
+    if (!outputPath.empty())
+    {
+        outFile.open(outputPath);
+        if (!outFile.good())
+        {
+            std::cerr << "Error: Could not open output file: " << outputPath << "\n";
+            seal::Cryptography::cleanseString(masterPassword);
+            return 1;
+        }
+        out = &outFile;
+    }
+
     size_t exportedCount = 0;
+    bool hasColonWarning = false;
     try
     {
         ScopedUnprotect dpapiScope(exportDpapi);
         for (const auto& rec : records)
         {
             if (rec.deleted)
+            {
                 continue;
+            }
+            // The export format is "platform:username:password" with exactly 2
+            // colon delimiters. If platform or username contain ':', the output
+            // cannot be round-tripped through --import because the parser splits
+            // on the first two colons. Warn the user so they can fix the data.
+            if (!hasColonWarning && (rec.platform.find(':') != std::string::npos))
+            {
+                std::cerr << "Warning: platform name '" << rec.platform
+                          << "' contains ':' -- exported data cannot be re-imported.\n"
+                          << "Rename the platform to remove ':' before re-importing.\n";
+                hasColonWarning = true;
+            }
             auto cred = seal::decryptCredentialOnDemand(rec, masterPassword);
             std::string user = seal::utils::secureWideToUtf8(cred.username);
             std::string pass = seal::utils::secureWideToUtf8(cred.password);
-            std::string entry = rec.platform + ":" + user + ":" + pass;
-            if (!exportData.empty())
-                exportData.push_back(',');
-            exportData += entry;
+            if (!hasColonWarning && user.find(':') != std::string::npos)
+            {
+                std::cerr << "Warning: username for '" << rec.platform
+                          << "' contains ':' -- exported data cannot be re-imported.\n";
+                hasColonWarning = true;
+            }
+            // Write directly to output, cleanse immediately. No intermediate
+            // accumulation buffer means only one credential is in pageable
+            // memory at any moment.
+            if (exportedCount > 0)
+                *out << ',';
+            *out << rec.platform << ':' << user << ':' << pass;
             ++exportedCount;
-            seal::Cryptography::cleanseString(entry);
             seal::Cryptography::cleanseString(user, pass);
             cred.cleanse();
         }
     }
     catch (const std::exception&)
     {
-        seal::Cryptography::cleanseString(exportData);
         seal::Cryptography::cleanseString(masterPassword);
         std::cerr << "Error: Decryption failed - wrong password or corrupted vault.\n";
         return 1;
     }
     seal::Cryptography::cleanseString(masterPassword);
 
-    // Write to file or stdout.
-    if (outputPath.empty())
+    if (!outputPath.empty())
     {
-        std::cout << exportData;
-    }
-    else
-    {
-        std::ofstream out(outputPath);
-        if (!out.good())
-        {
-            std::cerr << "Error: Could not open output file: " << outputPath << "\n";
-            return 1;
-        }
-        out << exportData;
-        out.close();
+        outFile.close();
         std::cout << "Exported " << exportedCount << " credential(s) to " << outputPath << "\n";
     }
-
-    seal::Cryptography::cleanseString(exportData);
     return 0;
 }
 #endif  // USE_QT_UI
-
-static int handleGenMode(int length)
-{
-    length = std::clamp(length, 8, 128);
-
-    static constexpr char charset[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+";
-    static constexpr int charsetLen = sizeof(charset) - 1;
-
-    // Rejection sampling: the largest multiple of charsetLen that fits in a
-    // byte is used as the acceptance threshold.  Random bytes >= limit are
-    // discarded and re-drawn so every charset position has exactly equal
-    // probability, eliminating the modular bias of a plain % charsetLen.
-    static constexpr unsigned char limit =
-        static_cast<unsigned char>((256 / charsetLen) * charsetLen);
-
-    std::string password;
-    password.reserve(static_cast<size_t>(length));
-
-    unsigned char rndBuf[128];
-    int filled = 0;
-    while (filled < length)
-    {
-        int need = length - filled;
-        // Over-request to reduce the number of RAND_bytes round-trips;
-        // each byte has a ~70% acceptance rate (196/256 for charsetLen=76).
-        int request = std::min(need * 2, static_cast<int>(sizeof(rndBuf)));
-        RAND_bytes(rndBuf, request);
-        for (int i = 0; i < request && filled < length; ++i)
-        {
-            if (rndBuf[i] < limit)
-            {
-                password.push_back(charset[rndBuf[i] % charsetLen]);
-                ++filled;
-            }
-        }
-    }
-    SecureZeroMemory(rndBuf, sizeof(rndBuf));
-
-    std::cout << password << "\n";
-
-    (void)seal::Clipboard::copyWithTTL(password);
-    std::cerr << "(copied to clipboard)\n";
-
-    seal::Cryptography::cleanseString(password);
-    return 0;
-}
-
-static int handleShredMode(const std::string& path)
-{
-    if (!seal::utils::fileExistsA(path))
-    {
-        std::cerr << "Error: File not found: " << path << "\n";
-        return 1;
-    }
-
-    std::cerr << "Shredding: " << path << " (3-pass overwrite + delete)...\n";
-    bool ok = seal::FileOperations::shredFile(path);
-    if (ok)
-        std::cerr << "(shredded) " << path << "\n";
-    else
-        std::cerr << "Error: Failed to shred " << path << "\n";
-    return ok ? 0 : 1;
-}
-
-static int handleHashMode(const std::string& path)
-{
-    if (!seal::utils::fileExistsA(path))
-    {
-        std::cerr << "Error: File not found: " << path << "\n";
-        return 1;
-    }
-
-    std::string hash = seal::FileOperations::hashFile(path);
-    if (hash.empty())
-    {
-        std::cerr << "Error: Failed to hash " << path << "\n";
-        return 1;
-    }
-
-    std::cout << hash << "  " << path << "\n";
-    return 0;
-}
-
-static int handleVerifyMode(const std::string& path)
-{
-    if (!seal::utils::fileExistsA(path))
-    {
-        std::cerr << "Error: File not found: " << path << "\n";
-        return 1;
-    }
-
-    try
-    {
-        seal::basic_secure_string<wchar_t> password = seal::readPasswordConsole();
-        seal::DPAPIGuard<seal::basic_secure_string<wchar_t>> dpapi(&password);
-        ScopedUnprotect<decltype(dpapi)> dpapiScope(dpapi);
-
-        std::ifstream in(path, std::ios::binary);
-        std::vector<unsigned char> blob((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-        in.close();
-
-        // Attempt decryption - success means password is correct
-        auto plain =
-            seal::Cryptography::decryptPacket(std::span<const unsigned char>(blob), password);
-        seal::Cryptography::cleanseString(plain);
-        seal::Cryptography::cleanseString(password);
-
-        std::cerr << "(verified) " << path << " - password correct\n";
-        return 0;
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "(failed) " << path << " - " << e.what() << "\n";
-        return 1;
-    }
-}
-
-static int handleWipeMode()
-{
-    (void)seal::Clipboard::copyWithTTL("");
-    seal::wipeConsoleBuffer();
-    std::cerr << "(wiped) clipboard and console buffer cleared\n";
-    return 0;
-}
-
-static int handleFileEncrypt(const std::string& inputPath, const std::string& outputPath)
-{
-    if (!seal::utils::fileExistsA(inputPath))
-    {
-        std::cerr << "Error: File not found: " << inputPath << "\n";
-        return 1;
-    }
-
-    try
-    {
-        seal::basic_secure_string<wchar_t> password = seal::readPasswordConsole();
-        seal::DPAPIGuard<seal::basic_secure_string<wchar_t>> dpapi(&password);
-        ScopedUnprotect<decltype(dpapi)> dpapiScope(dpapi);
-
-        bool ok = seal::FileOperations::encryptFileInPlace(inputPath, password);
-        if (!ok)
-        {
-            std::cerr << "Error: Encryption failed for " << inputPath << "\n";
-            seal::Cryptography::cleanseString(password);
-            return 1;
-        }
-
-        // Rename to output path (default: append .seal)
-        std::string dest = outputPath.empty()
-                               ? seal::utils::add_ext(inputPath, std::string_view{".seal"})
-                               : outputPath;
-
-        if (!MoveFileExA(inputPath.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING))
-        {
-            std::cerr << "Error: Failed to rename " << inputPath << " -> " << dest << "\n";
-            seal::Cryptography::cleanseString(password);
-            return 1;
-        }
-
-        std::cerr << "(encrypted) " << inputPath << " -> " << dest << "\n";
-        seal::Cryptography::cleanseString(password);
-        return 0;
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-}
-
-static int handleFileDecrypt(const std::string& inputPath, const std::string& outputPath)
-{
-    if (!seal::utils::fileExistsA(inputPath))
-    {
-        std::cerr << "Error: File not found: " << inputPath << "\n";
-        return 1;
-    }
-
-    try
-    {
-        seal::basic_secure_string<wchar_t> password = seal::readPasswordConsole();
-        seal::DPAPIGuard<seal::basic_secure_string<wchar_t>> dpapi(&password);
-        ScopedUnprotect<decltype(dpapi)> dpapiScope(dpapi);
-
-        bool ok = seal::FileOperations::decryptFileInPlace(inputPath, password);
-        if (!ok)
-        {
-            std::cerr << "Error: Decryption failed for " << inputPath << "\n";
-            seal::Cryptography::cleanseString(password);
-            return 1;
-        }
-
-        // Rename to output path (default: strip .seal extension)
-        std::string dest = outputPath;
-        if (dest.empty())
-        {
-            if (seal::utils::endsWithCi(inputPath, ".seal"))
-                dest = seal::utils::strip_ext_ci(inputPath, std::string_view{".seal"});
-            else
-                dest = inputPath + ".decrypted";
-        }
-
-        if (!MoveFileExA(inputPath.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING))
-        {
-            std::cerr << "Error: Failed to rename " << inputPath << " -> " << dest << "\n";
-            seal::Cryptography::cleanseString(password);
-            return 1;
-        }
-
-        std::cerr << "(decrypted) " << inputPath << " -> " << dest << "\n";
-        seal::Cryptography::cleanseString(password);
-        return 0;
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-}
-
-// String encrypt/decrypt mode: text in -> hex out, or hex in -> text out.
-// Reads from the inline argument if provided, otherwise from stdin.
-// Password prompt goes to stderr so piping works cleanly.
-static int handleStringMode(bool encryptMode, const std::string& inlineData)
-{
-    try
-    {
-        seal::basic_secure_string<wchar_t> password = seal::readPasswordConsole();
-        seal::DPAPIGuard<seal::basic_secure_string<wchar_t>> dpapi(&password);
-        ScopedUnprotect<decltype(dpapi)> dpapiScope(dpapi);
-
-        // Get input: inline argument or stdin
-        std::string input = inlineData;
-        if (input.empty())
-        {
-            input.assign(std::istreambuf_iterator<char>(std::cin),
-                         std::istreambuf_iterator<char>());
-            // Strip trailing newline from piped/pasted input
-            while (!input.empty() && (input.back() == '\n' || input.back() == '\r'))
-                input.pop_back();
-        }
-
-        if (input.empty())
-        {
-            std::cerr << "Error: No input provided\n";
-            seal::Cryptography::cleanseString(password);
-            return 1;
-        }
-
-        if (encryptMode)
-        {
-            std::string hex = seal::FileOperations::encryptLine(input, password);
-            std::vector<unsigned char> raw;
-            seal::utils::from_hex(std::string_view{hex}, raw);
-            std::string b64 = seal::utils::toBase64(std::span<const unsigned char>(raw));
-            std::cout << "(hex) " << hex << "\n";
-            std::cout << "(b64) " << b64 << "\n";
-            seal::Cryptography::cleanseString(input);
-        }
-        else
-        {
-            // Auto-detect format: try hex first (stricter check -- even length
-            // + all hex digits), then fall back to Base64.  Hex is checked
-            // first because all hex characters are valid Base64 characters,
-            // but the reverse is not true, making hex the more specific test.
-            bool looksHex = (input.size() % 2 == 0) && input.size() >= 4 &&
-                            std::all_of(input.begin(),
-                                        input.end(),
-                                        [](unsigned char c) { return std::isxdigit(c) != 0; });
-
-            if (looksHex)
-            {
-                auto plain = seal::FileOperations::decryptLine(input, password);
-                std::cout << std::string_view(plain.data(), plain.size()) << "\n";
-                seal::Cryptography::cleanseString(plain);
-            }
-            else if (seal::utils::isBase64(input))
-            {
-                auto bytes = seal::utils::fromBase64(input);
-                auto plain = seal::Cryptography::decryptPacket(
-                    std::span<const unsigned char>(bytes), password);
-                std::cout << std::string_view(reinterpret_cast<const char*>(plain.data()),
-                                              plain.size())
-                          << "\n";
-                seal::Cryptography::cleanseString(plain);
-            }
-            else
-            {
-                std::cerr << "Error: Input is neither valid hex nor Base64\n";
-                seal::Cryptography::cleanseString(input, password);
-                return 1;
-            }
-            seal::Cryptography::cleanseString(input);
-        }
-
-        seal::Cryptography::cleanseString(password);
-        return 0;
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-}
 
 // Process the "seal" input file (a text file named literally "seal" in the cwd).
 // It contains paths/hex tokens, one per line, terminated by '?' or '!'.
@@ -1045,7 +744,7 @@ static int handleCliMode()
 //   -e/--encrypt, -d/--decrypt  : stream encryption/decryption (stdin->stdout)
 //   -u/--ui / no args           : Qt GUI mode (default)
 //   --cli                       : interactive console mode
-//   --import / --export          : vault import/export
+//   --import / --export         : vault import/export
 //   -h/--help                   : usage information
 int main(int argc, char* argv[])
 {
@@ -1054,75 +753,62 @@ int main(int argc, char* argv[])
     if (rc >= 0)
         return rc;
 
-    const bool useUIMode =
-        opts.uiMode ||
-        (!opts.cliMode && !opts.stringMode && !opts.fileEncryptMode && !opts.fileDecryptMode &&
-         !opts.genMode && !opts.shredMode && !opts.hashMode && !opts.verifyMode && !opts.wipeMode);
     // Qt Quick's QML engine uses a JIT compiler (V4) that needs dynamic code
-    // generation. CLI / import / export never load QML, so they can keep the
+    // generation. Only GUI mode loads QML; all other modes can keep the
     // stricter PROCESS_MITIGATION_DYNAMIC_CODE_POLICY that blocks RWX pages.
-    const bool allowDynamicCode = useUIMode && !opts.importMode && !opts.exportMode;
+    const bool allowDynamicCode = (opts.mode == Mode::Gui);
 
     rc = initializeSecurity(allowDynamicCode);
     if (rc != 0)
         return rc;
 
-    if (opts.importMode)
+    switch (opts.mode)
     {
+        case Mode::Import:
 #ifdef USE_QT_UI
-        return handleImportMode(opts.importData, opts.importOutputPath);
+            return handleImportMode(opts.inputPath, opts.outputPath);
 #else
-        std::cerr << "Error: --import requires Qt UI support (USE_QT_UI).\n";
-        std::cerr << "Please rebuild with USE_QT_UI enabled.\n";
-        return 1;
+            std::cerr << "Error: --import requires Qt UI support (USE_QT_UI).\n";
+            return 1;
 #endif
-    }
 
-    if (opts.exportMode)
-    {
+        case Mode::Export:
 #ifdef USE_QT_UI
-        return handleExportMode(opts.exportInputPath, opts.exportOutputPath);
+            return handleExportMode(opts.inputPath, opts.outputPath);
 #else
-        std::cerr << "Error: --export requires Qt UI support (USE_QT_UI).\n";
-        std::cerr << "Please rebuild with USE_QT_UI enabled.\n";
-        return 1;
+            std::cerr << "Error: --export requires Qt UI support (USE_QT_UI).\n";
+            return 1;
 #endif
-    }
 
-    if (opts.genMode)
-        return handleGenMode(opts.genLength);
+        case Mode::Gen:
+            return seal::HandleGenMode(opts.genLength);
+        case Mode::Shred:
+            return seal::HandleShredMode(opts.inputPath);
+        case Mode::Hash:
+            return seal::HandleHashMode(opts.inputPath);
+        case Mode::Verify:
+            return seal::HandleVerifyMode(opts.inputPath);
+        case Mode::Wipe:
+            return seal::HandleWipeMode();
+        case Mode::FileEncrypt:
+            return seal::HandleFileEncrypt(opts.inputPath, opts.outputPath);
+        case Mode::FileDecrypt:
+            return seal::HandleFileDecrypt(opts.inputPath, opts.outputPath);
+        case Mode::TextEncrypt:
+            return seal::HandleStringMode(true, opts.stringData);
+        case Mode::TextDecrypt:
+            return seal::HandleStringMode(false, opts.stringData);
 
-    if (opts.shredMode)
-        return handleShredMode(opts.shredPath);
-
-    if (opts.hashMode)
-        return handleHashMode(opts.hashPath);
-
-    if (opts.verifyMode)
-        return handleVerifyMode(opts.verifyPath);
-
-    if (opts.wipeMode)
-        return handleWipeMode();
-
-    if (opts.fileEncryptMode)
-        return handleFileEncrypt(opts.fileInput, opts.fileOutput);
-
-    if (opts.fileDecryptMode)
-        return handleFileDecrypt(opts.fileInput, opts.fileOutput);
-
-    if (opts.stringMode)
-        return handleStringMode(opts.encryptMode, opts.stringData);
-
-    if (useUIMode)
-    {
+        case Mode::Gui:
 #ifdef USE_QT_UI
-        return RunQMLMode(argc, argv);
+            return RunQMLMode(argc, argv);
 #else
-        std::cerr << "Error: GUI mode requested but Qt UI support is not compiled in.\n";
-        std::cerr << "Please rebuild with USE_QT_UI enabled or use --cli for CLI mode.\n";
-        return 1;
+            std::cerr << "Error: GUI mode not available. Rebuild with USE_QT_UI or use --cli.\n";
+            return 1;
 #endif
-    }
 
-    return handleCliMode();
+        case Mode::Cli:
+            return handleCliMode();
+    }
+    return 1;
 }

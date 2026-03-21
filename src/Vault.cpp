@@ -26,14 +26,25 @@
 #include <string>
 #include <vector>
 
-static std::string qstringToStd(const QString& qstr)
-{
-    QByteArray bytes = qstr.toUtf8();
-    return std::string(bytes.constData(), bytes.size());
-}
-
 namespace
 {
+
+// Securely wipe a std::string including its SSO inline buffer, then release.
+// Unlike cleanseString + SecureZeroMemory(&obj), this does NOT zero the
+// object's metadata - only the character data - so the destructor operates
+// on a valid (empty) object rather than corrupted internal state.
+void wipeStdString(std::string& s)
+{
+    if (!s.empty())
+    {
+        // capacity() covers the full SSO inline buffer on MSVC (15 chars),
+        // not just size(), so stale characters beyond the logical length
+        // are wiped too.
+        SecureZeroMemory(s.data(), s.capacity());
+    }
+    s.clear();
+    s.shrink_to_fit();
+}
 // Vault binary format (V2):
 //   magic(4 bytes "SVH2") + version(1 byte) + count(4 bytes BE) + N records
 // Each record: platformLen(4 BE) + platformBlob + credLen(4 BE) + credBlob
@@ -93,6 +104,10 @@ static std::vector<unsigned char> encryptString(
         masterPassword);
 }
 
+// Decrypt a packet and return the plaintext as a regular std::string.
+// Used only for platform names, which are explicitly non-secret (displayed
+// in the vault list view). Secret fields (username, password) go through
+// decryptCredentialOnDemand() which returns secure_string in locked memory.
 static std::string decryptToString(
     const std::vector<unsigned char>& packet,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
@@ -109,7 +124,7 @@ std::vector<VaultRecord> loadVaultIndex(
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
     qCInfo(logVault) << "loadVaultIndex:" << QFileInfo(vaultPath).fileName();
-    std::ifstream in(qstringToStd(vaultPath), std::ios::in | std::ios::binary);
+    std::ifstream in(vaultPath.toStdString(), std::ios::in | std::ios::binary);
     if (!in)
     {
         qCWarning(logVault) << "loadVaultIndex: cannot open file";
@@ -232,7 +247,7 @@ bool saveVaultV2(
 
     // Atomic save: write to a temporary file, flush, then rename over the target.
     // This prevents data loss if the process crashes mid-write.
-    std::string finalPath = qstringToStd(vaultPath);
+    std::string finalPath = vaultPath.toStdString();
     std::string tmpPath = finalPath + ".tmp";
 
     std::ofstream out(tmpPath, std::ios::out | std::ios::trunc | std::ios::binary);
@@ -371,11 +386,6 @@ DecryptedCredential decryptCredentialOnDemand(
     }
 
     // Everything before the separator is the username; everything after is the password.
-    // Use explicit SecureZeroMemory on the intermediate strings because
-    // std::string may use SSO (small-string optimization), storing short
-    // strings directly in the object's stack frame. OPENSSL_cleanse +
-    // shrink_to_fit (used by cleanseString) only wipes heap-allocated
-    // buffers, leaving SSO data intact on the stack.
     std::string userUtf8(data, sep);
     std::string passUtf8;
     if (sep + 1 < len)
@@ -388,11 +398,12 @@ DecryptedCredential decryptCredentialOnDemand(
     cred.username = seal::utils::utf8ToSecureWide(userUtf8);
     cred.password = seal::utils::utf8ToSecureWide(passUtf8);
 
-    // Wipe via cleanseString (covers the heap-allocated buffer path).
-    // Note: SSO inline-buffer residue is accepted here -- zeroing the live
-    // std::string object metadata with SecureZeroMemory would corrupt it and
-    // cause undefined behaviour when the destructor runs at scope exit.
-    seal::Cryptography::cleanseString(userUtf8, passUtf8);
+    // Wipe the intermediate UTF-8 strings including their SSO inline buffers.
+    // wipeStdString zeroes s.data() for the full capacity() (covering SSO
+    // slack) then clear+shrink, keeping the object in a valid state for its
+    // destructor - unlike the previous SecureZeroMemory(&obj) which was UB.
+    wipeStdString(userUtf8);
+    wipeStdString(passUtf8);
     return cred;
 }
 
@@ -415,15 +426,15 @@ VaultRecord encryptCredential(
     credPlain.append(userUtf8);
     credPlain.push_back('\0');
     credPlain.append(passUtf8);
-    // Wipe the intermediate plaintext copies from memory before continuing.
-    seal::Cryptography::cleanseString(userUtf8, passUtf8);
+    wipeStdString(userUtf8);
+    wipeStdString(passUtf8);
 
     // Encrypt the combined credential blob with the master password.
     auto credBlob = seal::Cryptography::encryptPacket(
         std::span<const unsigned char>(reinterpret_cast<const unsigned char*>(credPlain.data()),
                                        credPlain.size()),
         masterPassword);
-    seal::Cryptography::cleanseString(credPlain);
+    wipeStdString(credPlain);
 
     auto platformBlob = encryptString(platform, masterPassword);
 
@@ -440,7 +451,7 @@ int encryptDirectory(
     const QString& dirPath,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
-    std::string path = qstringToStd(dirPath);
+    std::string path = dirPath.toStdString();
     int count = 0;
 
     qCInfo(logVault) << "encryptDirectory:" << dirPath;
@@ -472,18 +483,11 @@ int encryptDirectory(
 
         for (const auto& filePath : filePaths)
         {
-            if (FileOperations::encryptFileInPlace(filePath, password))
+            std::string newPath = filePath + ".seal";
+            if (FileOperations::encryptFileTo(filePath, newPath, password))
             {
-                std::string newPath = filePath + ".seal";
-                if (MoveFileExA(filePath.c_str(), newPath.c_str(), MOVEFILE_REPLACE_EXISTING))
-                {
-                    count++;
-                }
-                else
-                {
-                    qCWarning(logVault) << "encryptDirectory: rename failed for"
-                                        << QString::fromUtf8(filePath.c_str());
-                }
+                DeleteFileA(filePath.c_str());
+                count++;
             }
         }
     }
@@ -500,7 +504,7 @@ int decryptDirectory(
     const QString& dirPath,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
-    std::string path = qstringToStd(dirPath);
+    std::string path = dirPath.toStdString();
     int count = 0;
 
     qCInfo(logVault) << "decryptDirectory:" << dirPath;
@@ -531,18 +535,11 @@ int decryptDirectory(
 
         for (const auto& filePath : filePaths)
         {
-            if (FileOperations::decryptFileInPlace(filePath, password))
+            std::string newPath = seal::utils::strip_ext_ci(filePath, ".seal");
+            if (FileOperations::decryptFileTo(filePath, newPath, password))
             {
-                std::string newPath = seal::utils::strip_ext_ci(filePath, ".seal");
-                if (MoveFileExA(filePath.c_str(), newPath.c_str(), MOVEFILE_REPLACE_EXISTING))
-                {
-                    count++;
-                }
-                else
-                {
-                    qCWarning(logVault) << "decryptDirectory: rename failed for"
-                                        << QString::fromUtf8(filePath.c_str());
-                }
+                DeleteFileA(filePath.c_str());
+                count++;
             }
         }
     }

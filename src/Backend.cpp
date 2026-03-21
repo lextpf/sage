@@ -1,15 +1,21 @@
 #ifdef USE_QT_UI
 
 #include "Backend.h"
+
+#include "CliDispatch.h"
+#include "CliHandler.h"
 #include "Clipboard.h"
 #include "FileOperations.h"
 #include "FillController.h"
 #include "Logging.h"
+#include "NativeDialogs.h"
 #include "QrCapture.h"
 #include "ScopedDpapiUnprotect.h"
+#include "Utils.h"
 #include "VaultModel.h"
+#include "WindowChrome.h"
+#include "WindowController.h"
 
-#include <QtCore/QAbstractNativeEventFilter>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -19,14 +25,7 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QWindow>
 
-#include <commdlg.h>
-#include <dwmapi.h>
-#include <shlobj.h>
-#include <shobjidl.h>
 #include <windows.h>
-#include <windowsx.h>
-
-#include <openssl/rand.h>
 
 #include <filesystem>
 #include <functional>
@@ -36,135 +35,6 @@
 // Concrete alias used throughout this file.
 using ScopedDpapiUnprotect =
     seal::ScopedDpapiUnprotect<seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>>;
-
-namespace
-{
-
-// Native event filter that extends the client area into the title bar,
-// keeps the DWM caption buttons (close/min/max), and handles resize edges.
-//
-// This filter intercepts Win32 messages before Qt sees them, allowing us to
-// implement a fully custom title bar (drawn in QML) while still supporting
-// native window chrome behaviors like resizing, snapping, and DWM shadows.
-class TitleBarFilter : public QAbstractNativeEventFilter
-{
-public:
-    HWND m_hwnd = nullptr;
-
-    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override
-    {
-        if (eventType != "windows_generic_MSG")
-            return false;
-        auto* msg = static_cast<MSG*>(message);
-        if (!m_hwnd || msg->hwnd != m_hwnd)
-            return false;
-
-        switch (msg->message)
-        {
-            case WM_NCCALCSIZE:
-            {
-                if (msg->wParam == TRUE)
-                {
-                    // Returning 0 makes the entire window the client area,
-                    // removing the native title bar. For maximized windows,
-                    // constrain to the monitor work area so the taskbar stays visible.
-                    if (IsZoomed(msg->hwnd))
-                    {
-                        auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
-                        HMONITOR mon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
-                        MONITORINFO mi{};
-                        mi.cbSize = sizeof(mi);
-                        if (GetMonitorInfoW(mon, &mi))
-                            params->rgrc[0] = mi.rcWork;
-                    }
-                    *result = 0;
-                    return true;
-                }
-                break;
-            }
-            case WM_NCPAINT:
-            {
-                // Suppress all non-client painting to eliminate the 1px
-                // DWM border. The client area covers the full window so
-                // there is nothing legitimate to paint in the NC region.
-                *result = 0;
-                return true;
-            }
-            case WM_NCHITTEST:
-            {
-                // Custom title bar: all caption buttons are QML-driven,
-                // so we only handle resize borders here.
-                POINT pt;
-                pt.x = GET_X_LPARAM(msg->lParam);
-                pt.y = GET_Y_LPARAM(msg->lParam);
-                RECT rc;
-                GetWindowRect(msg->hwnd, &rc);
-
-                // Resize borders (only when not maximized).
-                if (!IsZoomed(msg->hwnd))
-                {
-                    // SM_CXPADDEDBORDERWIDTH (index 92) adds the extra padding
-                    // Windows uses around resizable frames. We use the raw
-                    // integer 92 because some older SDK headers don't define the
-                    // SM_CXPADDEDBORDERWIDTH constant.
-                    int frame = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(92);
-                    // Walk the edges: check top strip first (corners have
-                    // priority), then bottom strip, then left/right. The
-                    // returned HT* codes tell Windows which resize cursor to
-                    // show and which edge the user is dragging.
-                    if (pt.y < rc.top + frame)
-                    {
-                        if (pt.x < rc.left + frame)
-                        {
-                            *result = HTTOPLEFT;
-                            return true;
-                        }
-                        if (pt.x >= rc.right - frame)
-                        {
-                            *result = HTTOPRIGHT;
-                            return true;
-                        }
-                        *result = HTTOP;
-                        return true;
-                    }
-                    if (pt.y >= rc.bottom - frame)
-                    {
-                        if (pt.x < rc.left + frame)
-                        {
-                            *result = HTBOTTOMLEFT;
-                            return true;
-                        }
-                        if (pt.x >= rc.right - frame)
-                        {
-                            *result = HTBOTTOMRIGHT;
-                            return true;
-                        }
-                        *result = HTBOTTOM;
-                        return true;
-                    }
-                    if (pt.x < rc.left + frame)
-                    {
-                        *result = HTLEFT;
-                        return true;
-                    }
-                    if (pt.x >= rc.right - frame)
-                    {
-                        *result = HTRIGHT;
-                        return true;
-                    }
-                }
-
-                // Everything else is client area; QML handles window dragging
-                // via startSystemMove() from the header bar.
-                *result = HTCLIENT;
-                return true;
-            }
-        }
-        return false;
-    }
-};
-
-}  // anonymous namespace
 
 namespace seal
 {
@@ -176,9 +46,7 @@ basic_secure_string<wchar_t, locked_allocator<wchar_t>> Backend::qstringToSecure
     if (qstr.isEmpty())
         return result;
 
-    // Intermediate std::wstring is unavoidable; Qt has no direct-to-locked-page API.
-    // toStdWString() allocates a normal-heap wstring that we can't control,
-    // so we copy it into locked (non-pageable) memory immediately, then
+    // Copy into locked (non-pageable) memory immediately, then
     // scrub the heap copy to minimize the window where plaintext sits in
     // swappable RAM.
     std::wstring wstr = qstr.toStdWString();
@@ -190,9 +58,17 @@ basic_secure_string<wchar_t, locked_allocator<wchar_t>> Backend::qstringToSecure
 Backend::Backend(QObject* parent)
     : QObject(parent),
       m_Model(new VaultListModel(this)),
-      m_FillController(new FillController(this))
+      m_FillController(new FillController(this)),
+      m_WindowController(new WindowController(this))
 {
     m_Model->setRecords(&m_Records);
+
+    // Relay WindowController state to QML.
+    connect(m_WindowController,
+            &WindowController::alwaysOnTopChanged,
+            this,
+            &Backend::alwaysOnTopChanged);
+    connect(m_WindowController, &WindowController::compactChanged, this, &Backend::compactChanged);
 
     // Relay FillController state to QML so the UI can react to fill progress.
     connect(m_FillController, &FillController::armedChanged, this, &Backend::fillArmedChanged);
@@ -206,7 +82,7 @@ Backend::Backend(QObject* parent)
             &Backend::fillCountdownSecondsChanged);
 
     // Fill complete/cancel: stay minimized so seal doesn't steal focus from
-    // the app the user just filled credentials into. Only restore on error
+    // the app the user fills credentials into. Only restore on error
     // so the user can see what went wrong.
     connect(m_FillController,
             &FillController::fillCompleted,
@@ -355,7 +231,7 @@ void Backend::submitPassword(QString password)
     m_Password = std::move(wide);
     // Wrap the password in a DPAPI guard: when "protected", the memory is
     // encrypted in-place by the OS, making it unreadable even if the process
-    // memory is dumped. unprotect()/reprotect() bracket every use.
+    // memory is dumped.
     m_DPAPIGuard = seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>(&m_Password);
     m_PasswordSet = true;
     qCInfo(logBackend) << "password set via manual entry";
@@ -364,9 +240,7 @@ void Backend::submitPassword(QString password)
 
     // Resume the action that was waiting for a password (e.g. loadVault, addAccount).
     // The pending-action pattern: callers stash a lambda in m_PendingAction
-    // before triggering the password dialog. Once the user submits, we
-    // move-and-clear the lambda to avoid re-entrancy if the action itself
-    // queues another pending action.
+    // before triggering the password dialog.
     if (m_PendingAction)
     {
         auto action = std::move(m_PendingAction);
@@ -377,6 +251,13 @@ void Backend::submitPassword(QString password)
 
 void Backend::requestQrCapture()
 {
+    // If a QR capture is already running, don't start another one.
+    if (m_QrThread && m_QrThread->isRunning())
+    {
+        qCWarning(logBackend) << "QR capture already in progress";
+        return;
+    }
+
     _putenv_s("TESS_CAMERA_WARMUP_MS", "250");
     _putenv_s("TESS_ENTER_CAPTURE_FRAMES", "3");
 
@@ -392,7 +273,7 @@ void Backend::requestQrCapture()
     // loop stays responsive. captureQrFromWebcam() can block for up to
     // 60 seconds (capture timeout); doing that on the GUI thread would
     // freeze the entire UI.
-    auto* thread = QThread::create(
+    m_QrThread = QThread::create(
         [this]()
         {
             seal::secure_string<> qrResult = seal::captureQrFromWebcam();
@@ -424,8 +305,7 @@ void Backend::requestQrCapture()
                     emit qrCaptureFinished(true);
 
                     // Signal the QML layer to re-open the password dialog with the
-                    // captured text pre-filled. The user can review and press OK to
-                    // confirm, which flows through the normal submitPassword() path.
+                    // captured text pre-filled.
                     emit qrTextReady(captured);
 
                     // Wipe the local QString copy so the raw QR text doesn't linger
@@ -435,9 +315,16 @@ void Backend::requestQrCapture()
                 Qt::QueuedConnection);
         });
 
-    // Clean up the thread object after it finishes.
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-    thread->start();
+    // Null out the member when the thread finishes so we know it's done.
+    connect(m_QrThread,
+            &QThread::finished,
+            this,
+            [this]()
+            {
+                m_QrThread->deleteLater();
+                m_QrThread = nullptr;
+            });
+    m_QrThread->start();
 }
 
 void Backend::setStatus(const QString& text)
@@ -454,97 +341,15 @@ void Backend::refreshModel()
     setSelectedIndex(-1);
 }
 
-QString Backend::openFileDialog(const QString& title, const QString& filter)
-{
-    wchar_t fileName[MAX_PATH] = {};
-    std::wstring wTitle = title.toStdWString();
-    std::wstring wFilter = filter.toStdWString();
-
-    // OPENFILENAME expects a double-null-terminated filter string with
-    // pairs separated by NUL, e.g. "Description\0*.ext\0\0".
-    // The caller passes pipe-separated pairs, so we replace '|' -> '\0'.
-    for (auto& c : wFilter)
-    {
-        if (c == L'|')
-            c = L'\0';
-    }
-
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = nullptr;
-    ofn.lpstrFilter = wFilter.c_str();
-    ofn.lpstrFile = fileName;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrTitle = wTitle.c_str();
-    // OFN_NOCHANGEDIR prevents the dialog from changing the process CWD,
-    // which would break relative-path vault auto-discovery.
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameW(&ofn))
-        return QString::fromWCharArray(fileName);
-    return {};
-}
-
-QString Backend::saveFileDialog(const QString& title, const QString& filter)
-{
-    wchar_t fileName[MAX_PATH] = L".seal";
-    std::wstring wTitle = title.toStdWString();
-    std::wstring wFilter = filter.toStdWString();
-    for (auto& c : wFilter)
-    {
-        if (c == L'|')
-            c = L'\0';
-    }
-
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = nullptr;
-    ofn.lpstrFilter = wFilter.c_str();
-    ofn.lpstrFile = fileName;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrTitle = wTitle.c_str();
-    ofn.lpstrDefExt = L"seal";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-
-    if (GetSaveFileNameW(&ofn))
-        return QString::fromWCharArray(fileName);
-    return {};
-}
-
-QString Backend::openFolderDialog(const QString& title)
-{
-    IFileDialog* pfd = nullptr;
-    HRESULT hr =
-        CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
-    if (FAILED(hr))
-        return {};
-
-    DWORD opts = 0;
-    pfd->GetOptions(&opts);
-    pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
-    pfd->SetTitle(title.toStdWString().c_str());
-
-    QString result;
-    if (SUCCEEDED(pfd->Show(nullptr)))
-    {
-        IShellItem* psi = nullptr;
-        if (SUCCEEDED(pfd->GetResult(&psi)))
-        {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &path)))
-            {
-                result = QString::fromWCharArray(path);
-                CoTaskMemFree(path);
-            }
-            psi->Release();
-        }
-    }
-    pfd->Release();
-    return result;
-}
-
 void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
 {
+    // Cancel any active fill before replacing the records vector,
+    // otherwise FillController's borrowed pointer to m_Records would dangle.
+    if (m_FillController->isArmed())
+    {
+        m_FillController->cancel();
+        m_DPAPIGuard.reprotect();
+    }
     qCInfo(logBackend) << "loadVaultFromPath:" << QFileInfo(filePath).fileName()
                        << "autoLoad=" << isAutoLoad;
     try
@@ -602,7 +407,7 @@ void Backend::loadVault()
     }
 
     QString fileName =
-        openFileDialog("Load Vault File", "seal Vault (*.seal)|*.seal|All Files (*)|*.*|");
+        seal::OpenFileDialog("Load Vault File", "seal Vault (*.seal)|*.seal|All Files (*)|*.*|");
     if (fileName.isEmpty())
         return;
 
@@ -622,8 +427,8 @@ void Backend::saveVault()
     QString fileName = m_CurrentVaultPath;
     if (fileName.isEmpty())
     {
-        fileName =
-            saveFileDialog("Save Vault File", "seal Vault (*.seal)|*.seal|All Files (*)|*.*|");
+        fileName = seal::SaveFileDialog("Save Vault File",
+                                        "seal Vault (*.seal)|*.seal|All Files (*)|*.*|");
     }
     if (fileName.isEmpty())
         return;
@@ -661,6 +466,13 @@ void Backend::saveVault()
 
 void Backend::unloadVault()
 {
+    // Cancel any active fill before clearing records, otherwise
+    // FillController's borrowed pointer to m_Records would dangle.
+    if (m_FillController->isArmed())
+    {
+        m_FillController->cancel();
+        m_DPAPIGuard.reprotect();
+    }
     qCInfo(logBackend) << "unloadVault: clearing" << m_Records.size() << "record(s)";
     m_Records.clear();
     m_CurrentVaultPath.clear();
@@ -680,8 +492,8 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     if (!m_PasswordSet)
     {
-        // Capture all fields so the add completes automatically once the
-        // master password is set — no need to re-prompt the user.
+        // Capture all fields so the add completes automatically after the
+        // user enters the master password - no re-prompt needed.
         m_PendingAction = [this, service, username, password]()
         { addAccount(service, username, password); };
         ensurePassword();
@@ -757,7 +569,7 @@ void Backend::deleteAccount(int index)
     if (index < 0 || index >= (int)m_Records.size())
         return;
 
-    // Soft-delete: flag the record so it's excluded from the model
+    // Soft-delete, flag the record so it's excluded from the model
     // immediately, but keep it around until saveVault() commits to disk.
     m_Records[index].deleted = true;
     m_Records[index].dirty = true;
@@ -819,6 +631,10 @@ QVariantMap Backend::decryptAccountForEdit(int index)
                 data["editIndex"] = index;
                 cred.cleanse();
                 emit editAccountReady(data);
+                // Null-fill the QStrings so plaintext doesn't linger in
+                // Qt's Copy-On-Write heap after the signal delivers copies to QML.
+                data["username"] = QString();
+                data["password"] = QString();
             }
             catch (const std::exception& e)
             {
@@ -845,7 +661,6 @@ QVariantMap Backend::decryptAccountForEdit(int index)
         result["password"] =
             QString::fromWCharArray(cred.password.data(), (int)cred.password.size());
 
-        // Wipe the plaintext as soon as we've copied it into QVariants.
         cred.cleanse();
     }
     catch (const std::exception& e)
@@ -853,12 +668,18 @@ QVariantMap Backend::decryptAccountForEdit(int index)
         qCWarning(logBackend) << "decryptAccountForEdit: decrypt failed:" << e.what();
         emit errorOccurred("Error", QString("Failed to decrypt credential: %1").arg(e.what()));
     }
+    // Caller (Main.qml) copies username/password into dialog properties,
+    // not wipeable, but short-lived. The dialog's onClosed handler
+    // clears its own copies (see AccountDialog.qml).
     return result;
 }
 
-// Types username + Tab + password into the currently focused window.
-// The 200ms pause between username and Tab gives the target app time to
-// process the input before we advance to the next field.
+// Delays used in doTypeLogin to give the target application time to process
+// input between the username keystrokes, the Tab key, and the password.
+constexpr DWORD kFieldSettleDelayMs = 200;   // Wait for target field to process username
+constexpr DWORD kTabKeySettleDelayMs = 100;  // Wait for Tab to advance focus
+
+// Types username + tab + password into the currently focused window.
 static void doTypeLogin(
     const std::vector<seal::VaultRecord>& records,
     int index,
@@ -895,7 +716,7 @@ static void doTypeLogin(
 
     // Brief pause so the target field registers the username keystrokes
     // before we send Tab to advance to the password field.
-    QThread::msleep(200);
+    QThread::msleep(kFieldSettleDelayMs);
 
     // Synthesize a Tab key-down + key-up via SendInput to move focus to
     // the password field. SendInput injects hardware-level events into the
@@ -907,7 +728,7 @@ static void doTypeLogin(
     tabInput[1].ki.wVk = VK_TAB;
     tabInput[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, tabInput, sizeof(INPUT));
-    QThread::msleep(100);
+    QThread::msleep(kTabKeySettleDelayMs);
 
     seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
@@ -980,6 +801,9 @@ void Backend::typePassword(int index)
 
 void Backend::scheduleTypingAction(int index, std::function<void()> action, const QString& label)
 {
+    // Callers (typeLogin, typePassword) guard with `if (m_Busy) return;`
+    // before reaching this point, so overlapping timers cannot occur.
+    Q_ASSERT(!m_Busy);
     m_Busy = true;
     emit busyChanged();
 
@@ -1045,7 +869,7 @@ void Backend::encryptDirectory()
         return;
     }
 
-    QString dirPath = openFolderDialog("Select Directory to Encrypt");
+    QString dirPath = seal::OpenFolderDialog("Select Directory to Encrypt");
     if (dirPath.isEmpty())
         return;
 
@@ -1065,7 +889,7 @@ void Backend::decryptDirectory()
         return;
     }
 
-    QString dirPath = openFolderDialog("Select Directory to Decrypt");
+    QString dirPath = seal::OpenFolderDialog("Select Directory to Decrypt");
     if (dirPath.isEmpty())
         return;
 
@@ -1144,12 +968,30 @@ void Backend::armFill(int index)
     }
     setStatus("Fill armed - Ctrl+Click target field");
 
+    // Safety net: reprotect the DPAPI guard after a generous window even if
+    // the fill completion signals are somehow never delivered. The fill
+    // controller's 30s timeout should always fire cancel -> fillCancelled ->
+    // reprotect(), but this ensures the password isn't left unprotected
+    // indefinitely in case signal dispatch fails.
+    static constexpr int DPAPI_SAFETY_NET_MS = 60000;  // 60 seconds
+    QTimer::singleShot(DPAPI_SAFETY_NET_MS,
+                       this,
+                       [this]()
+                       {
+                           if (m_PasswordSet && !m_FillController->isArmed())
+                           {
+                               m_DPAPIGuard.reprotect();
+                           }
+                       });
+
     // Minimize so the user can see and click the target application.
     // Stays minimized after fill completes or is cancelled; only restored on error.
     for (QWindow* w : QGuiApplication::topLevelWindows())
     {
         if (w->isVisible())
+        {
             w->showMinimized();
+        }
     }
 }
 
@@ -1162,6 +1004,22 @@ void Backend::cancelFill()
 void Backend::cleanup()
 {
     qCInfo(logBackend) << "cleanup: starting";
+
+    // Wait for any active QR capture thread to finish before destroying
+    // members it may reference. Without this, the thread could call
+    // QMetaObject::invokeMethod(this, ...) on a dangling pointer.
+    if (m_QrThread && m_QrThread->isRunning())
+    {
+        qCInfo(logBackend) << "cleanup: waiting for QR capture thread";
+        m_QrThread->requestInterruption();
+        if (!m_QrThread->wait(5000))
+        {
+            qCWarning(logBackend) << "cleanup: QR thread did not finish in 5s, terminating";
+            m_QrThread->terminate();
+            m_QrThread->wait();
+        }
+    }
+
     m_FillController->cancel();
 
     // If the user configured an auto-encrypt directory, encrypt it now
@@ -1196,94 +1054,22 @@ void Backend::cleanup()
 
 void Backend::updateWindowTheme(bool dark)
 {
-    auto windows = QGuiApplication::topLevelWindows();
-    if (windows.isEmpty())
-        return;
-
-    HWND hwnd = (HWND)windows.first()->winId();
-    if (!hwnd)
-        return;
-
-    // One-time setup: install the native event filter that extends the client
-    // area into the title bar and handles resize-border hit testing.
-    static bool frameInstalled = false;
-    if (!frameInstalled)
-    {
-        // Remove window icon from title bar
-        SetClassLongPtr(hwnd, GCLP_HICON, 0);
-        SetClassLongPtr(hwnd, GCLP_HICONSM, 0);
-        SendMessage(hwnd, WM_SETICON, ICON_SMALL, 0);
-        SendMessage(hwnd, WM_SETICON, ICON_BIG, 0);
-
-        // Install native event filter for custom title bar
-        auto* filter = new TitleBarFilter();
-        filter->m_hwnd = hwnd;
-        QCoreApplication::instance()->installNativeEventFilter(filter);
-
-        // Extend the DWM frame into the client area so the system draws its
-        // shadow and caption buttons over our content.
-        // {-1,-1,-1,-1} means "extend to the entire window" - DWM will
-        // render its glass/shadow over the full client surface.
-        MARGINS margins{-1, -1, -1, -1};
-        DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-        // Request rounded window corners from the DWM compositor.
-        static constexpr DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-        DWORD cornerPref = 2;  // DWMWCP_ROUND
-        DwmSetWindowAttribute(
-            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
-
-        // Force a frame recalculation so WM_NCCALCSIZE runs with our handler.
-        SetWindowPos(
-            hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-
-        frameInstalled = true;
-    }
-
-    // These DWM attribute IDs were introduced in Windows 10/11 but aren't
-    // always in the SDK headers. Defining them as constants lets us build
-    // with older SDKs while still using the newer personalization APIs.
-    static constexpr DWORD DWMWA_USE_IMMERSIVE_DARK_MODE = 20;  // Win10 1903+
-    static constexpr DWORD DWMWA_CAPTION_COLOR = 34;            // Win11 22000+
-    static constexpr DWORD DWMWA_BORDER_COLOR = 35;             // Win11 22000+
-    static constexpr DWORD DWMWA_TEXT_COLOR = 36;               // Win11 22000+
-
-    BOOL darkMode = dark ? TRUE : FALSE;
-    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
-
-    // Match border color to bgDeep so the 1px DWM frame blends invisibly.
-    COLORREF captionColor = dark ? RGB(7, 8, 16) : RGB(248, 246, 242);
-    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &captionColor, sizeof(captionColor));
-    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
-
-    COLORREF textColor = dark ? RGB(224, 230, 244) : RGB(30, 26, 18);
-    DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &textColor, sizeof(textColor));
+    m_WindowController->updateWindowTheme(dark);
 }
 
 void Backend::startWindowDrag()
 {
-    auto windows = QGuiApplication::topLevelWindows();
-    if (!windows.isEmpty())
-        windows.first()->startSystemMove();
+    m_WindowController->startWindowDrag();
 }
 
 bool Backend::isAlwaysOnTop() const
 {
-    return m_AlwaysOnTop;
+    return m_WindowController->isAlwaysOnTop();
 }
 
 void Backend::toggleAlwaysOnTop()
 {
-    auto windows = QGuiApplication::topLevelWindows();
-    if (windows.isEmpty())
-        return;
-
-    HWND hwnd = (HWND)windows.first()->winId();
-    m_AlwaysOnTop = !m_AlwaysOnTop;
-    SetWindowPos(
-        hwnd, m_AlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-    qCInfo(logBackend) << "alwaysOnTop:" << m_AlwaysOnTop;
-    emit alwaysOnTopChanged();
+    m_WindowController->toggleAlwaysOnTop();
 }
 
 void Backend::lockVault()
@@ -1302,38 +1088,12 @@ void Backend::lockVault()
 
 bool Backend::isCompact() const
 {
-    return m_Compact;
+    return m_WindowController->isCompact();
 }
 
 void Backend::toggleCompact()
 {
-    auto windows = QGuiApplication::topLevelWindows();
-    if (windows.isEmpty())
-        return;
-
-    QWindow* win = windows.first();
-    m_Compact = !m_Compact;
-
-    if (m_Compact)
-    {
-        // Save the current dimensions so we can restore them when leaving
-        // compact mode, preserving whatever size the user had chosen.
-        m_NormalWidth = win->width();
-        m_NormalHeight = win->height();
-        win->setMinimumHeight(272);
-        win->resize(win->width(), 272);
-    }
-    else
-    {
-        // Restore saved dimensions, falling back to default size if none
-        // were captured (e.g. app launched directly into compact mode).
-        win->setMinimumHeight(540);
-        win->resize(m_NormalWidth > 0 ? m_NormalWidth : 1420,
-                    m_NormalHeight > 0 ? m_NormalHeight : 690);
-    }
-
-    qCInfo(logBackend) << "compactMode:" << m_Compact;
-    emit compactChanged();
+    m_WindowController->toggleCompact();
 }
 
 bool Backend::isCliMode() const
@@ -1363,157 +1123,22 @@ void Backend::executeCliCommand(const QString& command)
 {
     QString trimmed = command.trimmed();
     if (trimmed.isEmpty())
+    {
         return;
+    }
 
     std::string input = trimmed.toStdString();
 
-    // --- Special commands (no password needed) ---
+    // --- Built-in commands (no password needed) ---
+    seal::CliCallbacks cb;
+    cb.output = [this](const QString& s) { emit cliOutputReady(s); };
+    cb.clearOutput = [this]() { emit cliOutputCleared(); };
+    cb.requestQrCapture = [this]() { requestQrCapture(); };
+    cb.armFill = [this](int i) { armFill(i); };
+    cb.records = &m_Records;
 
-    if (trimmed == ":help" || trimmed == ":h")
+    if (seal::HandleCliBuiltin(trimmed, cb))
     {
-        emit cliOutputReady(QStringLiteral("Available commands:"));
-        emit cliOutputReady(
-            QStringLiteral("  <text>        Encrypt text with AES-256-GCM, output hex"));
-        emit cliOutputReady(QStringLiteral("  <hex>         Decrypt hex token, copy to clipboard"));
-        emit cliOutputReady(QStringLiteral("  <path>        Encrypt/decrypt file"));
-        emit cliOutputReady(
-            QStringLiteral("  :gen [len]    Generate random password (default 20)"));
-        emit cliOutputReady(QStringLiteral("  :fill <svc>   Arm fill for a service by name"));
-        emit cliOutputReady(QStringLiteral("  :qr           Scan QR code from webcam"));
-        emit cliOutputReady(QStringLiteral("  :hex <text>   Hex-encode text"));
-        emit cliOutputReady(QStringLiteral("  :unhex <hex>  Hex-decode to text"));
-        emit cliOutputReady(QStringLiteral("  :cls          Clear terminal output"));
-        emit cliOutputReady(QStringLiteral("  :open :edit   Open seal input file in Notepad"));
-        emit cliOutputReady(QStringLiteral("  :copy :clip   Copy seal file to clipboard"));
-        emit cliOutputReady(QStringLiteral("  :clear :none  Clear clipboard"));
-        emit cliOutputReady(QStringLiteral("  :help         Show this help"));
-        return;
-    }
-
-    if (trimmed == ":open" || trimmed == ":o" || trimmed == ":edit")
-    {
-        bool ok = seal::openInputInNotepad();
-        emit cliOutputReady(ok ? QStringLiteral("(opened seal file in Notepad)")
-                               : QStringLiteral("(failed to launch Notepad)"));
-        return;
-    }
-
-    if (trimmed == ":copy" || trimmed == ":clip" || trimmed == ":copyfile" ||
-        trimmed == ":copyinput")
-    {
-        bool ok = seal::Clipboard::copyInputFile();
-        emit cliOutputReady(ok ? QStringLiteral("(fence copied to clipboard)")
-                               : QStringLiteral("(failed to copy fence)"));
-        return;
-    }
-
-    if (trimmed == ":clear" || trimmed == ":none")
-    {
-        (void)seal::Clipboard::copyWithTTL("");
-        emit cliOutputReady(QStringLiteral("(clipboard cleared)"));
-        return;
-    }
-
-    if (trimmed == ":cls" || trimmed == ":clear-screen")
-    {
-        emit cliOutputCleared();
-        return;
-    }
-
-    if (trimmed.startsWith(":gen"))
-    {
-        int length = 20;
-        if (trimmed.length() > 4)
-        {
-            bool ok = false;
-            int parsed = trimmed.mid(4).trimmed().toInt(&ok);
-            if (ok)
-                length = std::clamp(parsed, 8, 128);
-        }
-
-        static constexpr char charset[] =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+";
-        static constexpr int charsetLen = sizeof(charset) - 1;
-
-        std::vector<unsigned char> buf(static_cast<size_t>(length));
-        RAND_bytes(buf.data(), length);
-
-        QString password;
-        password.reserve(length);
-        for (int i = 0; i < length; ++i)
-            password.append(QChar(charset[buf[static_cast<size_t>(i)] % charsetLen]));
-
-        SecureZeroMemory(buf.data(), buf.size());
-
-        std::string narrow = password.toStdString();
-        (void)seal::Clipboard::copyWithTTL(narrow);
-        seal::Cryptography::cleanseString(narrow);
-
-        emit cliOutputReady(QString("%1  [copied]").arg(password));
-        return;
-    }
-
-    if (trimmed == ":qr")
-    {
-        emit cliOutputReady(QStringLiteral("(scanning QR code from webcam...)"));
-        requestQrCapture();
-        return;
-    }
-
-    if (trimmed.startsWith(":fill"))
-    {
-        QString service = trimmed.mid(5).trimmed();
-        if (service.isEmpty())
-        {
-            emit cliOutputReady(QStringLiteral("Usage: :fill <service>"));
-            return;
-        }
-        if (m_Records.empty())
-        {
-            emit cliOutputReady(QStringLiteral("(no vault loaded)"));
-            return;
-        }
-        for (int i = 0; i < static_cast<int>(m_Records.size()); ++i)
-        {
-            if (m_Records[i].deleted)
-                continue;
-            if (QString::fromStdString(m_Records[i].platform)
-                    .compare(service, Qt::CaseInsensitive) == 0)
-            {
-                emit cliOutputReady(QString("(arming fill for %1)")
-                                        .arg(QString::fromStdString(m_Records[i].platform)));
-                armFill(i);
-                return;
-            }
-        }
-        emit cliOutputReady(QString("(no account found for \"%1\")").arg(service));
-        return;
-    }
-
-    if (trimmed.startsWith(":hex "))
-    {
-        std::string text = trimmed.mid(5).toStdString();
-        auto bytes = std::vector<unsigned char>(text.begin(), text.end());
-        std::string hex = seal::utils::to_hex(std::span<const unsigned char>(bytes));
-        (void)seal::Clipboard::copyWithTTL(hex);
-        emit cliOutputReady(QString("%1  [copied]").arg(QString::fromStdString(hex)));
-        return;
-    }
-
-    if (trimmed.startsWith(":unhex "))
-    {
-        std::string hex = trimmed.mid(7).toStdString();
-        std::vector<unsigned char> bytes;
-        if (seal::utils::from_hex(std::string_view{hex}, bytes))
-        {
-            std::string text(bytes.begin(), bytes.end());
-            (void)seal::Clipboard::copyWithTTL(text);
-            emit cliOutputReady(QString("%1  [copied]").arg(QString::fromStdString(text)));
-        }
-        else
-        {
-            emit cliOutputReady(QStringLiteral("(invalid hex)"));
-        }
         return;
     }
 
@@ -1529,60 +1154,15 @@ void Backend::executeCliCommand(const QString& command)
     try
     {
         ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
-
-        // Priority 1: file/directory path
         std::string stripped = seal::utils::stripQuotes(seal::utils::trim(input));
 
-        bool isFilePath = false;
+        seal::CliDispatchCallbacks dcb{
+            .output = [this](const QString& s) { emit cliOutputReady(s); }, .password = m_Password};
+
+        // Priority 1: file/directory path
         if (seal::utils::fileExistsA(stripped))
-            isFilePath = true;
-
-        if (isFilePath)
         {
-            std::string target = stripped;
-
-            std::string base = seal::utils::basenameA(target);
-            if (seal::utils::endsWithCi(base, ".exe") || _stricmp(base.c_str(), "seal") == 0)
-            {
-                emit cliOutputReady(QString("(skipped) %1").arg(QString::fromStdString(target)));
-                return;
-            }
-
-            bool isSeal = seal::utils::endsWithCi(target, ".seal");
-            if (isSeal)
-            {
-                std::string newName = seal::utils::strip_ext_ci(target, std::string_view{".seal"});
-                bool ok = seal::FileOperations::decryptFileInPlace(target, m_Password);
-                if (ok)
-                {
-                    MoveFileExA(target.c_str(), newName.c_str(), MOVEFILE_REPLACE_EXISTING);
-                    emit cliOutputReady(
-                        QString("(decrypted) %1 -> %2")
-                            .arg(QString::fromStdString(target), QString::fromStdString(newName)));
-                }
-                else
-                {
-                    emit cliOutputReady(
-                        QString("(decrypt failed) %1").arg(QString::fromStdString(target)));
-                }
-            }
-            else
-            {
-                std::string newName = seal::utils::add_ext(target, std::string_view{".seal"});
-                bool ok = seal::FileOperations::encryptFileInPlace(target, m_Password);
-                if (ok)
-                {
-                    MoveFileExA(target.c_str(), newName.c_str(), MOVEFILE_REPLACE_EXISTING);
-                    emit cliOutputReady(
-                        QString("(encrypted) %1 -> %2")
-                            .arg(QString::fromStdString(target), QString::fromStdString(newName)));
-                }
-                else
-                {
-                    emit cliOutputReady(
-                        QString("(encrypt failed) %1").arg(QString::fromStdString(target)));
-                }
-            }
+            seal::CliDispatchFile(stripped, dcb);
             return;
         }
 
@@ -1590,58 +1170,18 @@ void Backend::executeCliCommand(const QString& command)
         auto hexTokens = seal::utils::extractHexTokens(input);
         if (!hexTokens.empty())
         {
-            for (const auto& tok : hexTokens)
-            {
-                try
-                {
-                    auto plain = seal::FileOperations::decryptLine(tok, m_Password);
-                    (void)seal::Clipboard::copyWithTTL(plain.view());
-                    emit cliOutputReady(
-                        QString("%1  [copied]")
-                            .arg(QString::fromUtf8(plain.data(), (int)plain.size())));
-                    seal::Cryptography::cleanseString(plain);
-                }
-                catch (const std::exception& ex)
-                {
-                    emit cliOutputReady(
-                        QString("(decrypt failed: %1)").arg(QString::fromUtf8(ex.what())));
-                }
-            }
+            seal::CliDispatchHexTokens(input, dcb);
             return;
         }
 
         // Priority 2b: base64-encoded ciphertext -> decrypt
-        if (seal::utils::isBase64(input))
+        if (seal::utils::isBase64(input) && seal::CliDispatchBase64(input, dcb))
         {
-            try
-            {
-                auto bytes = seal::utils::fromBase64(input);
-                if (!bytes.empty())
-                {
-                    auto plain = seal::Cryptography::decryptPacket(
-                        std::span<const unsigned char>(bytes), m_Password);
-                    std::string plainStr(reinterpret_cast<const char*>(plain.data()), plain.size());
-                    (void)seal::Clipboard::copyWithTTL(plainStr);
-                    emit cliOutputReady(QString("%1  [copied]").arg(QString::fromUtf8(plainStr)));
-                    seal::Cryptography::cleanseString(plain);
-                    seal::Cryptography::cleanseString(plainStr);
-                    return;
-                }
-            }
-            catch (...)
-            {
-                // Not valid base64 ciphertext, fall through to encrypt
-            }
+            return;
         }
 
         // Priority 3: plain text -> encrypt (show both hex and base64)
-        std::string hex = seal::FileOperations::encryptLine(input, m_Password);
-        // Convert hex back to raw bytes for base64 encoding
-        std::vector<unsigned char> raw;
-        seal::utils::from_hex(std::string_view{hex}, raw);
-        std::string b64 = seal::utils::toBase64(std::span<const unsigned char>(raw));
-        emit cliOutputReady(QString("(hex) %1").arg(QString::fromStdString(hex)));
-        emit cliOutputReady(QString("(b64) %1").arg(QString::fromStdString(b64)));
+        seal::CliDispatchEncrypt(input, dcb);
     }
     catch (const std::exception& ex)
     {
@@ -1654,7 +1194,9 @@ void Backend::handleQrResultForCli(const QString& text)
     std::string narrow = text.toStdString();
     (void)seal::Clipboard::copyWithTTL(narrow);
     seal::Cryptography::cleanseString(narrow);
-    emit cliOutputReady(QString("(QR captured) %1  [copied]").arg(text));
+    // Mask the QR text in CLI output - value is on the clipboard (TTL-scrubbed).
+    emit cliOutputReady(
+        QString("(QR captured) %1  [copied]").arg(QString(text.size(), QChar('*'))));
 }
 
 }  // namespace seal

@@ -13,7 +13,7 @@ namespace seal
  * @brief Static utility class for Windows clipboard operations with
  *        automatic TTL-based scrubbing of sensitive data.
  * @author Alex (https://github.com/lextpf)
- * @ingroup Clipboard
+ * @ingroup IO_Clipboard
  *
  * Wraps the Win32 clipboard API behind a simple static interface.
  * Internally, an anonymous-namespace RAII guard (`ClipboardLock`)

@@ -5,7 +5,6 @@
 #include <QtCore/QLoggingCategory>
 
 /**
- * @namespace seal::logging
  * @brief Qt logging categories and message handler for the seal application.
  * @author Alex (https://github.com/lextpf)
  * @ingroup Logging
@@ -19,12 +18,12 @@
  * unified format written to `stderr`.
  */
 
-Q_DECLARE_LOGGING_CATEGORY(logBackend)  ///< Backend / QML bridge operations.
-Q_DECLARE_LOGGING_CATEGORY(logVault)    ///< Vault load, save, and record mutations.
-Q_DECLARE_LOGGING_CATEGORY(logCrypto)   ///< Encryption, decryption, and key derivation.
-Q_DECLARE_LOGGING_CATEGORY(logFill)     ///< Auto-fill hook and keystroke injection.
-Q_DECLARE_LOGGING_CATEGORY(logFile)     ///< File and directory I/O operations.
-Q_DECLARE_LOGGING_CATEGORY(logApp)      ///< Application lifecycle and general events.
+Q_DECLARE_LOGGING_CATEGORY(logBackend)  // Backend / QML bridge operations.
+Q_DECLARE_LOGGING_CATEGORY(logVault)    // Vault load, save, and record mutations.
+Q_DECLARE_LOGGING_CATEGORY(logCrypto)   // Encryption, decryption, and key derivation.
+Q_DECLARE_LOGGING_CATEGORY(logFill)     // Auto-fill hook and keystroke injection.
+Q_DECLARE_LOGGING_CATEGORY(logFile)     // File and directory I/O operations.
+Q_DECLARE_LOGGING_CATEGORY(logApp)      // Application lifecycle and general events.
 
 /**
  * @brief Install the seal-specific Qt message handler.

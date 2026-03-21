@@ -61,7 +61,7 @@ Item {
 
         // Sonar rings - GPU-rendered vector arcs via QtQuick.Shapes.
         // Each ring is a donut (two concentric circular paths with OddEvenFill)
-        // filled with a conic gradient. No Canvas rasterization, no onPaint —
+        // filled with a conic gradient. No Canvas rasterization, no onPaint -
         // the scene graph handles anti-aliasing natively.
         Shape {
             id: ringWarm
@@ -228,7 +228,7 @@ Item {
             id: easterEgg
 
             // Nudge each ring's center by a small random offset so the ripples
-            // don't share a single perfectly concentric origin — like droplets
+            // don't share a single perfectly concentric origin - like droplets
             // on a water surface that land slightly apart.
             ScriptAction {
                 script: {
@@ -247,7 +247,7 @@ Item {
                 NumberAnimation { target: ringWarm; property: "width";   from: Theme.px(12); to: Theme.px(180); duration: 2200; easing.type: Easing.OutCubic }
                 NumberAnimation { target: ringWarm; property: "opacity"; from: 0.70;          to: 0;             duration: 2200; easing.type: Easing.InQuad }
 
-                // Ring 2 - aurora, staggered 400ms, mid reach, gradient rotated 120°
+                // Ring 2 - aurora, staggered 400ms, mid reach, gradient rotated 120 deg
                 SequentialAnimation {
                     PauseAnimation { duration: 400 }
                     ParallelAnimation {
@@ -256,7 +256,7 @@ Item {
                     }
                 }
 
-                // Ring 3 - cool aurora, staggered 800ms, least reach, gradient rotated 240°
+                // Ring 3 - cool aurora, staggered 800ms, least reach, gradient rotated 240 deg
                 SequentialAnimation {
                     PauseAnimation { duration: 800 }
                     ParallelAnimation {

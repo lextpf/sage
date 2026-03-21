@@ -58,7 +58,7 @@ namespace seal
  * after copying into the `secure_string`.
  *
  * Configurable via environment variables:
- * - `TESS_CAMERA_WARMUP_MS` - auto-exposure warm-up period (default: 2000 ms)
+ * - `TESS_CAMERA_WARMUP_MS` - auto-exposure warm-up period (default: 250 ms)
  * - `TESS_CAPTURE_TIMEOUT_SEC` - detection loop timeout (default: 60 s, range 5-300)
  * - `TESS_CAMERA_INDEX` - force a specific camera index instead of auto-selection
  */

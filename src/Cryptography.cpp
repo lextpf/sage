@@ -15,8 +15,7 @@ bool Cryptography::ctEqualRaw(const unsigned char* a, const unsigned char* b, si
     // Constant-time comparison: XOR each byte pair and OR-accumulate into v.
     // If any byte differs, at least one bit in v will be set. Because every
     // iteration executes the same operations regardless of match/mismatch,
-    // the CPU timing is data-independent -- preventing timing side-channels
-    // that could let an attacker deduce which byte position differs first.
+    // the CPU timing is data-independent.
     unsigned char v = 0;
     for (size_t i = 0; i < n; ++i)
         v |= static_cast<unsigned char>(a[i] ^ b[i]);
@@ -103,7 +102,6 @@ void Cryptography::detectDebugger()
         TerminateProcess(GetCurrentProcess(), 0xDEAD);
         // __fastfail(7) == FAST_FAIL_FATAL_APP_EXIT: triggers an immediate
         // kernel-level process termination that cannot be caught or handled.
-        // Belt-and-suspenders fallback in case TerminateProcess is hooked.
         __fastfail(7);
         return;
     }
@@ -117,8 +115,8 @@ void Cryptography::detectDebugger()
 #else
         OutputDebugStringA("[seal] FATAL: remote debugger detected\n");
 #endif
-        TerminateProcess(GetCurrentProcess(), 0xDEAD);  // security kill exit code
-        __fastfail(7);  // FAST_FAIL_FATAL_APP_EXIT -- unhookable kernel kill
+        TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        __fastfail(7);
         return;
     }
 
@@ -145,8 +143,8 @@ void Cryptography::detectDebugger()
 #else
                 OutputDebugStringA("[seal] FATAL: kernel debug port detected\n");
 #endif
-                TerminateProcess(GetCurrentProcess(), 0xDEAD);  // security kill exit code
-                __fastfail(7);  // FAST_FAIL_FATAL_APP_EXIT -- unhookable kernel kill
+                TerminateProcess(GetCurrentProcess(), 0xDEAD);
+                __fastfail(7);
                 return;
             }
         }
@@ -161,7 +159,6 @@ void Cryptography::trimWorkingSet()
 {
     // Force pages out of the working set so plaintext doesn't linger
     // in physical RAM after sensitive operations complete.
-    // K32EmptyWorkingSet is in kernel32 - no extra lib needed.
     EmptyWorkingSet(GetCurrentProcess());
 }
 
@@ -170,8 +167,7 @@ using PFN_SetProcessMitigationPolicy = BOOL(WINAPI*)(PROCESS_MITIGATION_POLICY, 
 BOOL Cryptography::setSecureProcessMitigations(bool allowDynamicCode)
 {
     // Dynamically resolve SetProcessMitigationPolicy instead of linking directly.
-    // This API only exists on Windows 8+; dynamic resolution lets us degrade
-    // gracefully on older systems instead of failing to load at startup.
+    // This API only exists on Windows 8+.
     HMODULE hK32 = GetModuleHandleW(L"kernel32.dll");
     if (!hK32)
         return FALSE;
@@ -304,8 +300,7 @@ Cryptography::LockedKeyBuffer Cryptography::deriveKey(const SecurePwd& pwd,
 
     // RWGuard temporarily changes the password's memory page from PAGE_NOACCESS
     // to PAGE_READWRITE so that scrypt can read the raw bytes. The guard's
-    // destructor restores PAGE_NOACCESS, ensuring the password is inaccessible
-    // in memory outside this narrow window.
+    // destructor restores PAGE_NOACCESS.
     seal::RWGuard<CharT> guard(pwd.s.data());
 
     const char* pass = nullptr;
@@ -478,10 +473,7 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
 
     // Set tag and finalize (auth check happens here).
     // We copy the tag into a mutable buffer because EVP_CIPHER_CTX_ctrl's
-    // SET_TAG parameter is typed as void*, not const void*, even though the
-    // call only reads the tag. Passing the const pointer from the packet
-    // directly would require a const_cast, which is brittle -- the copy
-    // sidesteps undefined behavior if OpenSSL's internals ever do mutate it.
+    // SET_TAG parameter is typed as void*, not const void*
     std::vector<unsigned char> tagCopy(tag, tag + seal::cfg::TAG_LEN);
     opensslCheck(
         EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tagCopy.data()),
@@ -502,12 +494,97 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     return plain;
 }
 
+template <secure_password SecurePwd>
+void Cryptography::verifyPacket(std::span<const unsigned char> packet, const SecurePwd& password)
+{
+    std::span<const unsigned char> aad_expected = aadSpan();
+    const unsigned char* p = packet.data();
+    size_t n = packet.size();
+
+    // Parse the wire format (same layout as decryptPacket).
+    size_t off = 0;
+    if (!aad_expected.empty())
+    {
+        if (n < aad_expected.size())
+            throw std::runtime_error("Ciphertext too short (missing AAD)");
+        if (std::memcmp(p, aad_expected.data(), aad_expected.size()) != 0)
+            throw std::runtime_error("Bad AAD header");
+        off = aad_expected.size();
+    }
+
+    if (n < off + seal::cfg::SALT_LEN + seal::cfg::IV_LEN + seal::cfg::TAG_LEN)
+        throw std::runtime_error("Ciphertext too short");
+
+    const unsigned char* salt = p + off;
+    const unsigned char* iv = p + off + seal::cfg::SALT_LEN;
+    const unsigned char* ct = p + off + seal::cfg::SALT_LEN + seal::cfg::IV_LEN;
+
+    size_t ct_len_with_tag = n - off - seal::cfg::SALT_LEN - seal::cfg::IV_LEN;
+    if (ct_len_with_tag < seal::cfg::TAG_LEN)
+        throw std::runtime_error("Invalid ciphertext/tag sizes");
+
+    size_t ct_len = ct_len_with_tag - seal::cfg::TAG_LEN;
+    const unsigned char* tag = ct + ct_len;
+
+    auto key = deriveKey(password, std::span<const unsigned char>(salt, seal::cfg::SALT_LEN));
+
+    seal::EvpCipherCtx ctx;
+    opensslCheck(EVP_DecryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
+                 "DecryptInit(cipher) failed");
+    opensslCheck(
+        EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)seal::cfg::IV_LEN, nullptr),
+        "SET_IVLEN failed");
+    opensslCheck(EVP_DecryptInit_ex(ctx.p, nullptr, nullptr, key.data(), iv),
+                 "DecryptInit(key/iv) failed");
+
+    if (!aad_expected.empty())
+    {
+        int tmp = 0;
+        opensslCheck(
+            EVP_DecryptUpdate(ctx.p, nullptr, &tmp, aad_expected.data(), (int)aad_expected.size()),
+            "DecryptUpdate(AAD) failed");
+    }
+
+    // Process ciphertext in fixed-size chunks, discarding decrypted output.
+    // GCM must see all ciphertext to compute the authentication tag, but the
+    // plaintext itself is not needed for verification. A stack-allocated scratch
+    // buffer keeps peak memory at O(1) instead of O(ciphertext_length).
+    constexpr size_t VERIFY_CHUNK = 65536;
+    unsigned char scratch[VERIFY_CHUNK];
+    int outlen = 0;
+    size_t pos = 0;
+    while (pos < ct_len)
+    {
+        size_t remaining = ct_len - pos;
+        int chunk = static_cast<int>(remaining < VERIFY_CHUNK ? remaining : VERIFY_CHUNK);
+        opensslCheck(EVP_DecryptUpdate(ctx.p, scratch, &outlen, ct + pos, chunk),
+                     "DecryptUpdate(CT) failed");
+        pos += static_cast<size_t>(chunk);
+    }
+    SecureZeroMemory(scratch, sizeof(scratch));
+
+    std::vector<unsigned char> tagCopy(tag, tag + seal::cfg::TAG_LEN);
+    opensslCheck(
+        EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tagCopy.data()),
+        "SET_TAG failed");
+
+    unsigned char finBuf[16]{};
+    int fin = 0;
+    int ok = EVP_DecryptFinal_ex(ctx.p, finBuf, &fin);
+    SecureZeroMemory(finBuf, sizeof(finBuf));
+    cleanseString(key);
+
+    if (ok != 1)
+    {
+#ifdef USE_QT_UI
+        qCWarning(logCrypto) << "verifyPacket: GCM authentication failed";
+#endif
+        throw std::runtime_error("Authentication failed (bad password or corrupted data)");
+    }
+}
+
 // Explicit template instantiations for both narrow (char/UTF-8) and wide
-// (wchar_t/UTF-16) password types. Because the template definitions live in
-// this .cpp file rather than the header, the linker would otherwise fail with
-// unresolved symbols. These instantiations force the compiler to emit object
-// code for both specializations here, so other translation units can link to
-// them without needing the full template body.
+// (wchar_t/UTF-16) password types.
 template Cryptography::LockedKeyBuffer Cryptography::deriveKey(const secure_string<>&,
                                                                std::span<const unsigned char>);
 template Cryptography::LockedKeyBuffer Cryptography::deriveKey(const basic_secure_string<wchar_t>&,
@@ -522,5 +599,9 @@ template std::vector<unsigned char> Cryptography::decryptPacket(std::span<const 
                                                                 const secure_string<>&);
 template std::vector<unsigned char> Cryptography::decryptPacket(
     std::span<const unsigned char>, const basic_secure_string<wchar_t>&);
+
+template void Cryptography::verifyPacket(std::span<const unsigned char>, const secure_string<>&);
+template void Cryptography::verifyPacket(std::span<const unsigned char>,
+                                         const basic_secure_string<wchar_t>&);
 
 }  // namespace seal
