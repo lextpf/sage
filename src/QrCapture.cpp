@@ -91,12 +91,9 @@ seal::secure_string<> seal::captureQrFromWebcam()
     // Constrain process memory while OpenCV is active.
     CaptureJobGuard jobGuard(kCaptureMemoryLimitBytes);
 
-    // Disable MSMF hardware transforms. On some UVC webcams, MSMF's MFT
-    // pipeline fails to initialise and hangs or returns black frames.
-    // Setting this env var before any VideoCapture::open() forces MSMF to
-    // use software-only paths, which avoids the startup failure.
-    // _putenv_s is the thread-safe replacement for _putenv on MSVC.
-    _putenv_s("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0");
+    // OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS is set once during
+    // process init (main.cpp) to avoid a data race between this
+    // worker thread's getenv calls and the GUI thread.
 
     cv::VideoCapture cap;
     cv::Mat frame;

@@ -762,6 +762,19 @@ int main(int argc, char* argv[])
     if (rc != 0)
         return rc;
 
+    // Set OpenCV environment variables while still single-threaded.
+    // captureQrFromWebcam() runs on a worker thread and reads these via
+    // std::getenv; setting them here avoids a data race on the process
+    // environment block.
+    _putenv_s("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0");
+
+    // RAII guard ensures the clipboard TTL thread is joined before static
+    // destruction begins, preventing potential deadlock when DLLs unload.
+    struct ClipboardShutdownGuard
+    {
+        ~ClipboardShutdownGuard() { seal::Clipboard::shutdown(); }
+    } clipGuard;
+
     switch (opts.mode)
     {
         case Mode::Import:
