@@ -431,6 +431,15 @@ private:
     bool ensurePassword();
 
     /**
+     * @brief Cancel any active fill operation and re-protect DPAPI.
+     *
+     * Must be called before any operation that mutates m_Records or
+     * m_Password, since FillController borrows pointers to both.
+     * No-op when the fill controller is not armed.
+     */
+    void cancelFillIfArmed();
+
+    /**
      * @brief Attempt to load a vault from the given path.
      *
      * On wrong-password, clears the master key, re-queues itself as

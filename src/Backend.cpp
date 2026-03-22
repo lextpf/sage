@@ -46,12 +46,12 @@ basic_secure_string<wchar_t, locked_allocator<wchar_t>> Backend::qstringToSecure
     if (qstr.isEmpty())
         return result;
 
-    // Copy into locked (non-pageable) memory immediately, then
-    // scrub the heap copy to minimize the window where plaintext sits in
-    // swappable RAM.
-    std::wstring wstr = qstr.toStdWString();
-    result.s.assign(wstr.begin(), wstr.end());
-    SecureZeroMemory(wstr.data(), wstr.size() * sizeof(wchar_t));
+    // Copy directly from the QString internal buffer into locked (non-pageable)
+    // memory, avoiding the intermediate heap-allocated std::wstring that
+    // toStdWString() would create. On Windows sizeof(wchar_t) == sizeof(QChar).
+    static_assert(sizeof(wchar_t) == sizeof(QChar), "wchar_t/QChar size mismatch");
+    const auto* src = reinterpret_cast<const wchar_t*>(qstr.data());
+    result.s.assign(src, src + qstr.size());
     return result;
 }
 
@@ -258,9 +258,6 @@ void Backend::requestQrCapture()
         return;
     }
 
-    _putenv_s("TESS_CAMERA_WARMUP_MS", "250");
-    _putenv_s("TESS_ENTER_CAPTURE_FRAMES", "3");
-
     // AllowSetForegroundWindow(ASFW_ANY) grants any process permission to
     // steal foreground focus. Without this, the QR scanner's OpenCV window
     // would open behind our window because Windows blocks background
@@ -341,15 +338,20 @@ void Backend::refreshModel()
     setSelectedIndex(-1);
 }
 
-void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
+void Backend::cancelFillIfArmed()
 {
-    // Cancel any active fill before replacing the records vector,
-    // otherwise FillController's borrowed pointer to m_Records would dangle.
     if (m_FillController->isArmed())
     {
         m_FillController->cancel();
         m_DPAPIGuard.reprotect();
     }
+}
+
+void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
+{
+    // Cancel any active fill before replacing the records vector,
+    // otherwise FillController's borrowed pointer to m_Records would dangle.
+    cancelFillIfArmed();
     qCInfo(logBackend) << "loadVaultFromPath:" << QFileInfo(filePath).fileName()
                        << "autoLoad=" << isAutoLoad;
     try
@@ -448,6 +450,7 @@ void Backend::saveVault()
         // they've been committed to disk.
         for (auto& rec : m_Records)
             rec.dirty = false;
+        cancelFillIfArmed();
         std::erase_if(m_Records, [](const seal::VaultRecord& r) { return r.deleted; });
 
         refreshModel();
@@ -468,11 +471,7 @@ void Backend::unloadVault()
 {
     // Cancel any active fill before clearing records, otherwise
     // FillController's borrowed pointer to m_Records would dangle.
-    if (m_FillController->isArmed())
-    {
-        m_FillController->cancel();
-        m_DPAPIGuard.reprotect();
-    }
+    cancelFillIfArmed();
     qCInfo(logBackend) << "unloadVault: clearing" << m_Records.size() << "record(s)";
     m_Records.clear();
     m_CurrentVaultPath.clear();
@@ -492,10 +491,32 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     if (!m_PasswordSet)
     {
-        // Capture all fields so the add completes automatically after the
-        // user enters the master password - no re-prompt needed.
-        m_PendingAction = [this, service, username, password]()
-        { addAccount(service, username, password); };
+        // Convert credentials to locked-page memory before capture so
+        // plaintext doesn't sit in pageable heap while the password dialog
+        // is open. shared_ptr makes the lambda copyable (std::function
+        // requires it) while keeping the secret in a single locked allocation.
+        auto secUser =
+            std::make_shared<seal::basic_secure_string<wchar_t>>(qstringToSecureWide(username));
+        auto secPass =
+            std::make_shared<seal::basic_secure_string<wchar_t>>(qstringToSecureWide(password));
+        m_PendingAction = [this, service, secUser, secPass]()
+        {
+            // Encrypt directly from locked memory - no round-trip through
+            // pageable QString.  The shared_ptrs keep the secure strings
+            // alive across the std::function copy boundary.
+            cancelFillIfArmed();
+            ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
+            seal::VaultRecord newRecord = seal::encryptCredential(
+                service.toUtf8().toStdString(), *secUser, *secPass, m_Password);
+            seal::Cryptography::cleanseString(*secUser, *secPass);
+            m_Records.push_back(std::move(newRecord));
+            qCInfo(logBackend) << "addAccount (deferred): service=" << service
+                               << "total=" << m_Records.size();
+            refreshModel();
+            setStatus("Account added");
+            emit vaultLoadedChanged();
+            emit vaultFileNameChanged();
+        };
         ensurePassword();
         return;
     }
@@ -511,6 +532,7 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     seal::Cryptography::cleanseString(secUsername, secPassword);
 
+    cancelFillIfArmed();
     m_Records.push_back(std::move(newRecord));
     qCInfo(logBackend) << "addAccount: service=" << service << "total=" << m_Records.size();
     refreshModel();
@@ -553,6 +575,7 @@ void Backend::editAccount(int index,
     auto secPassword = qstringToSecureWide(password);
 
     // Replace the record entirely - re-encrypt with a fresh salt/IV.
+    cancelFillIfArmed();
     ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     m_Records[index] = seal::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
@@ -571,6 +594,7 @@ void Backend::deleteAccount(int index)
 
     // Soft-delete, flag the record so it's excluded from the model
     // immediately, but keep it around until saveVault() commits to disk.
+    cancelFillIfArmed();
     m_Records[index].deleted = true;
     m_Records[index].dirty = true;
     qCInfo(logBackend) << "deleteAccount: index=" << index << "(soft-delete)";
@@ -716,7 +740,7 @@ static void doTypeLogin(
 
     // Brief pause so the target field registers the username keystrokes
     // before we send Tab to advance to the password field.
-    QThread::msleep(kFieldSettleDelayMs);
+    Sleep(kFieldSettleDelayMs);
 
     // Synthesize a Tab key-down + key-up via SendInput to move focus to
     // the password field. SendInput injects hardware-level events into the
@@ -728,9 +752,9 @@ static void doTypeLogin(
     tabInput[1].ki.wVk = VK_TAB;
     tabInput[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, tabInput, sizeof(INPUT));
-    QThread::msleep(kTabKeySettleDelayMs);
+    Sleep(kTabKeySettleDelayMs);
 
-    seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
+    (void)seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
 }
 
@@ -761,7 +785,7 @@ static void doTypePassword(
         return;
     }
 
-    seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
+    (void)seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
 }
 
@@ -846,14 +870,25 @@ void Backend::scheduleTypingAction(int index, std::function<void()> action, cons
 
                     QString service = QString::fromUtf8(m_Records[index].platform.c_str());
 
-                    ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
-                    action();
-
-                    m_CountdownText.clear();
-                    emit countdownTextChanged();
-                    m_Busy = false;
-                    emit busyChanged();
-                    setStatus(QString("%1 typed for '%2'").arg(label, service));
+                    // Run the blocking typing sequence on a worker thread so
+                    // the GUI event loop stays responsive during Sleep() calls
+                    // between username, Tab, and password keystrokes.
+                    m_DPAPIGuard.unprotect();
+                    auto* worker = QThread::create([action = std::move(action)]() { action(); });
+                    connect(worker,
+                            &QThread::finished,
+                            this,
+                            [this, worker, label, service]()
+                            {
+                                worker->deleteLater();
+                                m_DPAPIGuard.reprotect();
+                                m_CountdownText.clear();
+                                emit countdownTextChanged();
+                                m_Busy = false;
+                                emit busyChanged();
+                                setStatus(QString("%1 typed for '%2'").arg(label, service));
+                            });
+                    worker->start();
                 }
             });
 
