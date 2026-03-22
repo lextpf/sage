@@ -8,12 +8,16 @@
 #include <openssl/rand.h>
 
 #include <bit>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <iterator>
-#include <semaphore>
+#include <mutex>
+#include <queue>
+#include <thread>
 
 namespace seal
 {
@@ -44,105 +48,6 @@ std::string FileOperations::tripleToUtf8(const seal::secure_triplet16_t& t)
     out.append(u).push_back(':');
     out.append(p);
     return out;
-}
-
-template <secure_password SecurePwd>
-bool FileOperations::encryptFileInPlace(const std::string& path, const SecurePwd& pwd)
-{
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-    {
-        std::cerr << "(encrypt) cannot open: " << path << "\n";
-        return false;
-    }
-    std::vector<unsigned char> plain((std::istreambuf_iterator<char>(in)), {});
-    in.close();
-    auto packet = seal::Cryptography::encryptPacket(std::span<const unsigned char>(plain), pwd);
-    // Wipe plaintext from memory as soon as encryption is done.
-    seal::Cryptography::cleanseString(plain);
-
-    // Atomic write pattern: Write ciphertext to a .tmp file first, then
-    // atomically rename it over the original. This ensures the original
-    // file is never left in a half-written state.
-    std::string tmpPath = path + ".tmp";
-    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        std::cerr << "(encrypt) cannot write temp file: " << tmpPath << "\n";
-        return false;
-    }
-    out.write(reinterpret_cast<const char*>(packet.data()), (std::streamsize)packet.size());
-    out.flush();
-    if (!out)
-    {
-        std::cerr << "(encrypt) write failed: " << tmpPath << "\n";
-        out.close();
-        DeleteFileA(tmpPath.c_str());
-        return false;
-    }
-    out.close();
-
-    if (!MoveFileExA(tmpPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
-    {
-        std::cerr << "(encrypt) cannot replace original: " << path << "\n";
-        DeleteFileA(tmpPath.c_str());
-        return false;
-    }
-    return true;
-}
-
-template <secure_password SecurePwd>
-bool FileOperations::decryptFileInPlace(const std::string& path, const SecurePwd& pwd)
-{
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-    {
-        std::cerr << "(decrypt) cannot open: " << path << "\n";
-        return false;
-    }
-    std::vector<unsigned char> blob((std::istreambuf_iterator<char>(in)), {});
-    in.close();
-    try
-    {
-        auto plain = seal::Cryptography::decryptPacket(std::span<const unsigned char>(blob), pwd);
-
-        // Atomic write pattern (same as encryptFileInPlace)
-        std::string tmpPath = path + ".tmp";
-        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!out)
-        {
-            std::cerr << "(decrypt) cannot write temp file: " << tmpPath << "\n";
-            seal::Cryptography::cleanseString(plain);
-            return false;
-        }
-        out.write(reinterpret_cast<const char*>(plain.data()), (std::streamsize)plain.size());
-        out.flush();
-        // Wipe plaintext from memory immediately after flushing to disk,
-        // BEFORE checking the stream state. This minimizes the window during
-        // which decrypted data sits in process memory, even on write failure.
-        seal::Cryptography::cleanseString(plain);
-        if (!out)
-        {
-            std::cerr << "(decrypt) write failed: " << tmpPath << "\n";
-            out.close();
-            DeleteFileA(tmpPath.c_str());
-            return false;
-        }
-        out.close();
-
-        if (!MoveFileExA(tmpPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
-        {
-            std::cerr << "(decrypt) cannot replace original: " << path << "\n";
-            DeleteFileA(tmpPath.c_str());
-            return false;
-        }
-        return true;
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "(decrypt) " << e.what() << "\n";
-        return false;
-    }
 }
 
 template <secure_password SecurePwd>
@@ -374,14 +279,96 @@ bool FileOperations::parseTriples(std::string_view plain,
 
 namespace
 {
-// Global concurrency cap for processDirectory. Limits total parallel file
-// encrypt/decrypt operations across all recursive subdirectory traversals.
-std::counting_semaphore<16> s_ProcessSemaphore{16};
+
+// Fixed-size worker pool for processDirectory.  Replaces the previous
+// semaphore + std::async pattern which created an unbounded number of
+// OS threads (one per std::async call) even though only 16 could run
+// concurrently.  Deep directory trees could exhaust the thread quota.
+// This pool creates exactly N workers and uses a bounded queue so
+// Submit() blocks when there is too much outstanding work.
+class WorkPool
+{
+public:
+    explicit WorkPool(unsigned nWorkers)
+    {
+        for (unsigned i = 0; i < nWorkers; ++i)
+        {
+            m_Workers.emplace_back([this](std::stop_token stop) { WorkerLoop(stop); });
+        }
+    }
+
+    std::future<bool> Submit(std::function<bool()> fn)
+    {
+        std::packaged_task<bool()> task(std::move(fn));
+        auto fut = task.get_future();
+        {
+            std::unique_lock lk(m_Mutex);
+            m_SpaceAvailable.wait(lk, [this] { return m_Tasks.size() < MAX_QUEUED || m_Stopped; });
+            if (m_Stopped)
+            {
+                return fut;
+            }
+            m_Tasks.push(std::move(task));
+        }
+        m_TaskAvailable.notify_one();
+        return fut;
+    }
+
+    ~WorkPool()
+    {
+        {
+            std::lock_guard lk(m_Mutex);
+            m_Stopped = true;
+        }
+        m_TaskAvailable.notify_all();
+        m_SpaceAvailable.notify_all();
+        // jthread destructors request stop and join automatically.
+    }
+
+    WorkPool(const WorkPool&) = delete;
+    WorkPool& operator=(const WorkPool&) = delete;
+
+private:
+    void WorkerLoop(std::stop_token stop)
+    {
+        while (!stop.stop_requested())
+        {
+            std::packaged_task<bool()> task;
+            {
+                std::unique_lock lk(m_Mutex);
+                m_TaskAvailable.wait(lk, [this] { return m_Stopped || !m_Tasks.empty(); });
+                if (m_Stopped && m_Tasks.empty())
+                {
+                    return;
+                }
+                task = std::move(m_Tasks.front());
+                m_Tasks.pop();
+            }
+            m_SpaceAvailable.notify_one();
+            task();
+        }
+    }
+
+    std::vector<std::jthread> m_Workers;
+    std::queue<std::packaged_task<bool()>> m_Tasks;
+    std::mutex m_Mutex;
+    std::condition_variable m_TaskAvailable;
+    std::condition_variable m_SpaceAvailable;
+    static constexpr size_t MAX_QUEUED = 32;
+    bool m_Stopped = false;
+};
+
+WorkPool& GetPool()
+{
+    static WorkPool pool(std::min(std::thread::hardware_concurrency(), 8u));
+    return pool;
+}
+
 }  // namespace
 
 // Walk a directory with FindFirstFileA/FindNextFileA, encrypting or
 // decrypting every file based on its .seal extension (see processFilePath).
-// Subdirectories are processed recursively via std::async.
+// Subdirectories are processed recursively via a fixed-size work pool.
 template <secure_password SecurePwd>
 bool FileOperations::processDirectory(const std::string& dir,
                                       const SecurePwd& password,
@@ -415,6 +402,10 @@ bool FileOperations::processDirectory(const std::string& dir,
         futures.clear();
     };
 
+    // SAFETY: pool lambdas below capture `password` by reference. This is
+    // safe because drainFutures() joins ALL futures before this function
+    // returns, guaranteeing password outlives every lambda. If you add an
+    // early-return path, you MUST drain futures first.
     do
     {
         const char* name = fd.cFileName;
@@ -436,32 +427,22 @@ bool FileOperations::processDirectory(const std::string& dir,
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
         {
-            // Recurse into subdirectories asynchronously so sibling
-            // directories can be processed in parallel.
+            // Recurse into subdirectories via the work pool so sibling
+            // directories can be processed in parallel without creating
+            // an unbounded number of OS threads.
             if (recurse)
             {
-                futures.push_back(std::async(std::launch::async,
-                                             [full, &password]() -> bool
-                                             {
-                                                 s_ProcessSemaphore.acquire();
-                                                 bool r = FileOperations::processDirectory(
-                                                     full, password, true);
-                                                 s_ProcessSemaphore.release();
-                                                 return r;
-                                             }));
+                futures.push_back(GetPool().Submit(
+                    [full, &password]() -> bool
+                    { return FileOperations::processDirectory(full, password, true); }));
             }
             continue;
         }
 
-        // Launch each file encrypt/decrypt on the thread pool.
-        futures.push_back(std::async(std::launch::async,
-                                     [full, &password]() -> bool
-                                     {
-                                         s_ProcessSemaphore.acquire();
-                                         bool r = FileOperations::processFilePath(full, password);
-                                         s_ProcessSemaphore.release();
-                                         return r;
-                                     }));
+        // Submit each file encrypt/decrypt to the work pool.
+        futures.push_back(
+            GetPool().Submit([full, &password]() -> bool
+                             { return FileOperations::processFilePath(full, password); }));
         ++total;
 
         if (futures.size() >= MAX_CONCURRENT)
@@ -544,14 +525,25 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
     }
 }
 
-// Decrypt a batch of hex-encoded ciphertext tokens. Each decrypted result is
-// tested against the colon-delimited triple format. If it parses as triples,
-// they are aggregated into aggTriples for structured display.
+// Index mapping for on-demand re-decryption: maps an aggregate entry
+// index (as shown in the masked view) back to the hex token and the
+// specific triple within that token's decrypted output.
+struct TokenMapping
+{
+    size_t hexTokenIndex;     // index into the allHexTokens vector
+    size_t intraTripleIndex;  // which triple within that token's decrypted output
+};
+
+// Decrypt a batch of hex-encoded ciphertext tokens. Extracts service names
+// (non-secret) for display and builds an index map for on-demand re-decryption.
+// Credentials are wiped immediately; only service names are retained.
 template <secure_password SecurePwd>
-static void decryptHexTokens(const std::vector<std::string>& hexTokens,
-                             const SecurePwd& password,
-                             std::vector<seal::secure_triplet16_t>& aggTriples,
-                             std::vector<std::string>& otherPlain)
+static void scanHexTokens(const std::vector<std::string>& hexTokens,
+                          const SecurePwd& password,
+                          std::vector<std::string>& allHexTokens,
+                          std::vector<std::wstring>& serviceNames,
+                          std::vector<TokenMapping>& indexMap,
+                          std::vector<std::string>& otherPlain)
 {
     for (const auto& tok : hexTokens)
     {
@@ -562,10 +554,17 @@ static void decryptHexTokens(const std::vector<std::string>& hexTokens,
             std::vector<seal::secure_triplet16<seal::locked_allocator<wchar_t>>> ts;
             if (FileOperations::parseTriples(plain.view(), ts))
             {
-                // Structured credential data -- collect for batch display.
-                aggTriples.insert(aggTriples.end(),
-                                  std::make_move_iterator(ts.begin()),
-                                  std::make_move_iterator(ts.end()));
+                size_t tokIdx = allHexTokens.size();
+                allHexTokens.push_back(tok);
+                for (size_t j = 0; j < ts.size(); ++j)
+                {
+                    // Extract non-secret service name for display.
+                    serviceNames.emplace_back(ts[j].primary.data(), ts[j].primary.size());
+                    indexMap.push_back({tokIdx, j});
+                }
+                // Wipe credentials immediately; only service names are kept.
+                for (auto& t : ts)
+                    seal::Cryptography::cleanseString(t.primary, t.secondary, t.tertiary);
             }
             else
             {
@@ -582,43 +581,46 @@ static void decryptHexTokens(const std::vector<std::string>& hexTokens,
     }
 }
 
-// Print decrypted triples to the console. In uncensored mode the full
-// "service:user:pass" text is printed. In censored (default) mode, the
-// password fields are masked with asterisks and the user clicks to copy
-// individual values via the interactive masked-output UI.
-static void displayTriples(std::vector<seal::secure_triplet16_t>& aggTriples, bool uncensored)
+// Print decrypted triples to the console in uncensored mode.
+// All triples are re-decrypted for stdout output (unavoidable since the
+// user explicitly chose uncensored) and wiped after printing.
+template <secure_password SecurePwd>
+static void displayTriplesUncensored(const std::vector<std::string>& allHexTokens,
+                                     const std::vector<TokenMapping>& indexMap,
+                                     const SecurePwd& password)
 {
-    if (uncensored)
+    std::ostringstream oss;
+    bool first = true;
+    for (const auto& m : indexMap)
     {
-        // Uncensored: Dump all triples comma-separated in plaintext.
-        std::ostringstream oss;
-        for (size_t i = 0; i < aggTriples.size(); ++i)
+        try
         {
-            if (i)
-                oss << ", ";
-            std::string sv = FileOperations::tripleToUtf8(aggTriples[i]);
-            oss << sv;
-            seal::Cryptography::cleanseString(sv);
+            auto plain = FileOperations::decryptLine(allHexTokens[m.hexTokenIndex], password);
+            std::vector<seal::secure_triplet16_t> ts;
+            if (FileOperations::parseTriples(plain.view(), ts) && m.intraTripleIndex < ts.size())
+            {
+                if (!first)
+                    oss << ", ";
+                std::string sv = FileOperations::tripleToUtf8(ts[m.intraTripleIndex]);
+                oss << sv;
+                seal::Cryptography::cleanseString(sv);
+                first = false;
+            }
+            seal::Cryptography::cleanseString(plain);
+            for (auto& t : ts)
+                seal::Cryptography::cleanseString(t.primary, t.secondary, t.tertiary);
         }
-        std::string printed = oss.str();
+        catch (const std::exception& ex)
+        {
+            std::cerr << "(decrypt failed: " << ex.what() << ")\n";
+        }
+    }
+    std::string printed = oss.str();
+    if (!printed.empty())
         std::cout << printed << "\n";
-        seal::Cryptography::cleanseString(printed);
-        // Wipe the ostringstream's internal buffer so plaintext does not
-        // linger on the heap after display.
-        std::string ossBuf = std::move(oss).str();
-        seal::Cryptography::cleanseString(ossBuf);
-    }
-    else
-    {
-        // Censored: show masked fields with click-to-copy behavior.
-        interactiveMaskedWin(aggTriples);
-        std::cout << "(Masked; Click **** to copy)\n";
-    }
-    // Wipe all sensitive fields from memory after display.
-    for (auto& t : aggTriples)
-    {
-        seal::Cryptography::cleanseString(t.primary, t.secondary, t.tertiary);
-    }
+    seal::Cryptography::cleanseString(printed);
+    std::string ossBuf = std::move(oss).str();
+    seal::Cryptography::cleanseString(ossBuf);
 }
 
 // Process a batch of user-supplied input lines with a three-tier dispatch:
@@ -627,6 +629,9 @@ static void displayTriples(std::vector<seal::secure_triplet16_t>& aggTriples, bo
 //   3. Plain text -- anything else is encrypted and printed as hex.
 // This priority order means a line that happens to look like valid hex but
 // also resolves to a real file path will be treated as a file path.
+//
+// In censored mode, credentials are decrypted on-demand at click time
+// (not accumulated in memory) to minimize the plaintext exposure window.
 template <secure_password SecurePwd>
 void FileOperations::processBatch(const std::vector<std::string>& lines,
                                   bool uncensored,
@@ -635,7 +640,11 @@ void FileOperations::processBatch(const std::vector<std::string>& lines,
     if (lines.empty())
         return;
 
-    std::vector<seal::secure_triplet16_t> aggTriples;
+    // Service names (non-secret, displayed in cleartext) and an index map
+    // for on-demand re-decryption. Credentials are never held simultaneously.
+    std::vector<std::string> allHexTokens;
+    std::vector<std::wstring> serviceNames;
+    std::vector<TokenMapping> indexMap;
     std::vector<std::string> otherPlain;
     std::vector<std::string> encHex;
 
@@ -649,7 +658,7 @@ void FileOperations::processBatch(const std::vector<std::string>& lines,
         auto hexTokens = seal::utils::extractHexTokens(L);
         if (!hexTokens.empty())
         {
-            decryptHexTokens(hexTokens, password, aggTriples, otherPlain);
+            scanHexTokens(hexTokens, password, allHexTokens, serviceNames, indexMap, otherPlain);
             continue;
         }
 
@@ -664,8 +673,34 @@ void FileOperations::processBatch(const std::vector<std::string>& lines,
         }
     }
 
-    if (!aggTriples.empty())
-        displayTriples(aggTriples, uncensored);
+    if (!serviceNames.empty())
+    {
+        if (uncensored)
+        {
+            // Uncensored: re-decrypt all for stdout (user explicitly chose this).
+            displayTriplesUncensored(allHexTokens, indexMap, password);
+        }
+        else
+        {
+            // Censored: on-demand decrypt. Only service names are in memory;
+            // credentials are decrypted one at a time when the user clicks.
+            auto decryptCb =
+                [&allHexTokens, &indexMap, &password](size_t idx) -> seal::secure_triplet16_t
+            {
+                const auto& m = indexMap[idx];
+                auto plain = FileOperations::decryptLine(allHexTokens[m.hexTokenIndex], password);
+                std::vector<seal::secure_triplet16_t> ts;
+                FileOperations::parseTriples(plain.view(), ts);
+                seal::Cryptography::cleanseString(plain);
+                if (m.intraTripleIndex < ts.size())
+                    return std::move(ts[m.intraTripleIndex]);
+                throw std::runtime_error("triple index out of range on re-decrypt");
+            };
+
+            interactiveMaskedWin(std::move(serviceNames), std::move(decryptCb));
+            std::cout << "(Masked; Click **** to copy)\n";
+        }
+    }
 
     for (auto& p : otherPlain)
     {
@@ -1151,13 +1186,13 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
         unsigned char finBuf[16]{};
         int fin = 0;
         int ok = EVP_DecryptFinal_ex(ctx.p, finBuf, &fin);
-        SecureZeroMemory(finBuf, sizeof(finBuf));
         seal::Cryptography::cleanseString(key);
         SecureZeroMemory(ctBuf.data(), ctBuf.size());
         SecureZeroMemory(plainBuf.data(), plainBuf.size());
 
         if (ok != 1)
         {
+            SecureZeroMemory(finBuf, sizeof(finBuf));
             std::cerr << "(decrypt-stream) authentication failed: " << srcPath << "\n";
             out.close();
             DeleteFileA(tmpPath.c_str());
@@ -1168,6 +1203,7 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
         {
             out.write(reinterpret_cast<const char*>(finBuf), fin);
         }
+        SecureZeroMemory(finBuf, sizeof(finBuf));
         out.flush();
         ioOk = out.good();
         out.close();
@@ -1200,12 +1236,6 @@ using SecWide = seal::basic_secure_string<wchar_t>;
 // Explicit template instantiations for the two password types (narrow and
 // wide secure strings). Without these lines the linker would report
 // unresolved-symbol errors.
-template bool FileOperations::encryptFileInPlace(const std::string&, const SecNarrow&);
-template bool FileOperations::encryptFileInPlace(const std::string&, const SecWide&);
-
-template bool FileOperations::decryptFileInPlace(const std::string&, const SecNarrow&);
-template bool FileOperations::decryptFileInPlace(const std::string&, const SecWide&);
-
 template bool FileOperations::encryptFileTo(const std::string&,
                                             const std::string&,
                                             const SecNarrow&);

@@ -23,10 +23,11 @@ namespace seal
  *
  * ## :material-file-lock: Single-File Operations
  *
- * encryptFileInPlace() / decryptFileInPlace() read a file into memory,
- * encrypt or decrypt the contents via `Cryptography::encryptPacket` /
- * `Cryptography::decryptPacket`, and overwrite the original file. encryptLine() / decryptLine() do
- * the same for hex-encoded text strings, returning the result rather than writing to disk.
+ * encryptFileTo() / decryptFileTo() read a file, encrypt or decrypt the
+ * contents via `Cryptography::encryptPacket` / `Cryptography::decryptPacket`,
+ * and write to a new destination (atomic temp+rename). encryptLine() /
+ * decryptLine() do the same for hex-encoded text strings, returning the
+ * result rather than writing to disk.
  *
  * ## :material-folder-lock: Directory & Batch Processing
  *
@@ -55,36 +56,6 @@ public:
     FileOperations() = delete;
     FileOperations(const FileOperations&) = delete;
     FileOperations& operator=(const FileOperations&) = delete;
-
-    /**
-     * @brief Encrypt a file in place, overwriting the original contents.
-     *
-     * Reads the entire file into memory, encrypts with AES-256-GCM via
-     * `Cryptography::encryptPacket`, then truncates and rewrites the file with the
-     * encrypted packet. The plaintext buffer is securely wiped after use.
-     *
-     * @tparam SecurePwd Secure password container.
-     * @param path Filesystem path to the file.
-     * @param pwd  Master password for key derivation.
-     * @return `true` on success, `false` if the file cannot be opened/written.
-     */
-    template <secure_password SecurePwd>
-    static bool encryptFileInPlace(const std::string& path, const SecurePwd& pwd);
-
-    /**
-     * @brief Decrypt a file in place, overwriting the encrypted contents.
-     *
-     * Reads the encrypted packet, decrypts via `Cryptography::decryptPacket`, then
-     * truncates and rewrites with the recovered plaintext. On authentication
-     * failure (wrong password or corrupted data) the file is left unchanged.
-     *
-     * @tparam SecurePwd Secure password container.
-     * @param path Filesystem path to the encrypted file.
-     * @param pwd  Master password for key derivation.
-     * @return `true` on success, `false` on I/O or authentication error.
-     */
-    template <secure_password SecurePwd>
-    static bool decryptFileInPlace(const std::string& path, const SecurePwd& pwd);
 
     /**
      * @brief Encrypt a file to a new destination without modifying the source.
