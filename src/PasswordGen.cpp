@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <stdexcept>
 #include <string>
 
 namespace seal
@@ -34,7 +35,8 @@ std::string GeneratePassword(int length)
         // Over-request to reduce the number of RAND_bytes round-trips;
         // each byte has a ~70% acceptance rate (196/256 for charsetLen=76).
         int request = std::min(need * 2, static_cast<int>(sizeof(rndBuf)));
-        RAND_bytes(rndBuf, request);
+        if (RAND_bytes(rndBuf, request) != 1)
+            throw std::runtime_error("RAND_bytes failed");
         for (int i = 0; i < request && filled < length; ++i)
         {
             if (rndBuf[i] < limit)
