@@ -19,6 +19,12 @@ REM ============================================================================
 
 setlocal enabledelayedexpansion
 
+REM --- Parse command-line flags ---
+set "STATIC_BUILD=0"
+for %%A in (%*) do (
+    if /I "%%A"=="--static" set "STATIC_BUILD=1"
+)
+
 REM --- Visual Studio paths ---
 set "MSVC_ROOT=C:\Program Files\Microsoft Visual Studio\2022\Community\VC"
 set "VSVCVARS=%MSVC_ROOT%\Auxiliary\Build\vcvars64.bat"
@@ -31,10 +37,14 @@ REM --- vcpkg: use env VCPKG_ROOT if set, otherwise fall back ---
 if not defined VCPKG_ROOT set "VCPKG_ROOT=%REPO_ROOT%\..\vcpkg"
 set "REPO_OVERLAY_TRIPLETS=%REPO_ROOT%\triplets"
 set "DEFAULT_TRIPLET=x64-windows-release-msvc143"
-set "VCPKG_TRIPLET=%VCPKG_TRIPLET%"
+set "STATIC_TRIPLET=x64-windows-static-release-msvc143"
 
 REM --- Defaults for optional env overrides ---
-if not defined VCPKG_TRIPLET set "VCPKG_TRIPLET=%DEFAULT_TRIPLET%"
+if "%STATIC_BUILD%"=="1" (
+    if not defined VCPKG_TRIPLET set "VCPKG_TRIPLET=%STATIC_TRIPLET%"
+) else (
+    if not defined VCPKG_TRIPLET set "VCPKG_TRIPLET=%DEFAULT_TRIPLET%"
+)
 REM MSVC crashes under parallel compilation when building Qt6.
 if not defined VCPKG_MAX_CONCURRENCY set "VCPKG_MAX_CONCURRENCY=1"
 
@@ -228,6 +238,11 @@ echo ===========================================================================
 echo.
 echo Build Output:
 echo   Release: build\bin\Release\seal.exe
+if "%STATIC_BUILD%"=="1" (
+    echo   Linkage: Static (/MT, %STATIC_TRIPLET%)
+) else (
+    echo   Linkage: Dynamic (/MD, %DEFAULT_TRIPLET%)
+)
 echo.
 echo Documentation:
 echo   - Md:   docs\  (if doxide available)

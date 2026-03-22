@@ -10,6 +10,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Static CRT when using a static vcpkg triplet (/MT instead of /MD).
+# This eliminates the runtime dependency on vcruntime140.dll / msvcp140.dll.
+if(VCPKG_TARGET_TRIPLET MATCHES "static")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(NOT WIN32)
     message(FATAL_ERROR "This project requires Windows")
 endif()
@@ -50,6 +56,48 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
 
+# vcpkg's static Qt6 ships CMake targets for some QML style plugins
+# (FluentWinUI3, NativeStyle) but omits the compiled .obj resource files
+# they reference. Qt6QmlPlugins.cmake unconditionally includes every
+# QmlPlugin Config file, so broken targets must be removed before
+# find_package sees them. We only use the Basic style — remove all
+# unused style configs to avoid present and future breakage.
+if(VCPKG_TARGET_TRIPLET MATCHES "static")
+    set(_vcpkg_installed "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+
+    # Remove share-level style packages we don't use (all except Basic).
+    file(GLOB _unused_style_dirs
+        "${_vcpkg_installed}/share/Qt6QuickControls2FluentWinUI3*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2NativeStyle*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2Fusion*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2Imagine*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2Material*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2Universal*"
+        "${_vcpkg_installed}/share/Qt6QuickControls2Windows*"
+    )
+    foreach(_dir ${_unused_style_dirs})
+        file(GLOB _files "${_dir}/*")
+        if(_files)
+            file(REMOVE ${_files})
+        endif()
+    endforeach()
+
+    # Remove QML plugin configs for all unused styles (keeps only Basic).
+    file(GLOB _broken_qml_plugins
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*fluentwinui3*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*nativestyle*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*fusionstyle*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*imaginestyle*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*materialstyle*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*universalstyle*"
+        "${_vcpkg_installed}/share/Qt6Qml/QmlPlugins/*windowsstyle*"
+    )
+    if(_broken_qml_plugins)
+        message(STATUS "Removing broken static QML style plugin targets (vcpkg bug)")
+        file(REMOVE ${_broken_qml_plugins})
+    endif()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Widgets)
 find_package(OpenSSL REQUIRED)
 
@@ -76,6 +124,11 @@ set(WINDOWS_LIBS
     Crypt32
     dwmapi
 )
+
+# Static OpenCV videoio (MSMF backend) and COM interop require these.
+if(VCPKG_TARGET_TRIPLET MATCHES "static")
+    list(APPEND WINDOWS_LIBS oleaut32 mf mfplat mfreadwrite mfuuid shlwapi)
+endif()
 
 set(SEAL_SOURCES
     src/main.cpp
@@ -175,7 +228,20 @@ qt_add_qml_module(seal
         ${SEAL_SVGS}
 )
 
-if(WIN32)
+# Static Qt6: register QML plugins at link time (qmlimportscanner runs
+# automatically to determine which QML modules the app actually imports).
+if(VCPKG_TARGET_TRIPLET MATCHES "static")
+    qt_import_qml_plugins(seal)
+endif()
+
+# Dead-code elimination for static builds.
+if(MSVC AND VCPKG_TARGET_TRIPLET MATCHES "static")
+    target_link_options(seal PRIVATE /OPT:REF /OPT:ICF)
+endif()
+
+# windeployqt + qt.conf are only needed for shared (dynamic) Qt builds.
+# Static Qt links everything into the exe; there are no DLLs to deploy.
+if(WIN32 AND NOT VCPKG_TARGET_TRIPLET MATCHES "static")
     if(TARGET Qt6::windeployqt)
         get_target_property(WINDEPLOYQT_EXECUTABLE Qt6::windeployqt IMPORTED_LOCATION)
     endif()
@@ -210,9 +276,11 @@ endif()
 install(TARGETS seal
     RUNTIME DESTINATION bin
 )
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/qt.conf"
-    DESTINATION bin
-)
+if(NOT VCPKG_TARGET_TRIPLET MATCHES "static")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/qt.conf"
+        DESTINATION bin
+    )
+endif()
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
