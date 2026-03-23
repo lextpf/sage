@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -34,6 +35,11 @@ constexpr size_t kMaxQrDataBytes = 4096;
 // 1 GiB process memory cap to block heap-spray / decompression bombs.
 constexpr SIZE_T kCaptureMemoryLimitBytes = 1ULL << 30;
 
+// Ensures at most one CaptureJobGuard is active process-wide. Without this,
+// a second guard's destructor would clear the memory limit while the first
+// capture is still running, silently disabling the sandbox.
+std::atomic<bool> g_CaptureJobActive{false};
+
 // RAII Job Object that caps process memory at a fixed limit while OpenCV is active.
 // OpenCV may decode arbitrary camera frames; a malicious virtual-camera driver or
 // a decompression bomb could trigger unbounded allocations. The Job Object enforces
@@ -42,9 +48,16 @@ constexpr SIZE_T kCaptureMemoryLimitBytes = 1ULL << 30;
 struct CaptureJobGuard
 {
     HANDLE hJob = nullptr;
+    bool m_Owns = false;  // true only if this instance acquired the exclusive flag
 
     explicit CaptureJobGuard(SIZE_T memoryLimitBytes)
     {
+        // Enforce single-instance: if another guard is active, skip setup.
+        bool expected = false;
+        if (!g_CaptureJobActive.compare_exchange_strong(expected, true))
+            return;
+        m_Owns = true;
+
         hJob = CreateJobObjectW(nullptr, nullptr);
         if (!hJob)
             return;
@@ -70,12 +83,16 @@ struct CaptureJobGuard
 
     ~CaptureJobGuard()
     {
-        if (!hJob)
-            return;
-        // Lift the memory cap so the rest of seal runs unconstrained.
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
-        (void)SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info));
-        CloseHandle(hJob);
+        if (hJob)
+        {
+            // Lift the memory cap so the rest of seal runs unconstrained.
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+            (void)SetInformationJobObject(
+                hJob, JobObjectExtendedLimitInformation, &info, sizeof(info));
+            CloseHandle(hJob);
+        }
+        if (m_Owns)
+            g_CaptureJobActive.store(false);
     }
 
     CaptureJobGuard(const CaptureJobGuard&) = delete;
