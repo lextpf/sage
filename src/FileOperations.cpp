@@ -19,6 +19,30 @@
 #include <queue>
 #include <thread>
 
+namespace
+{
+
+// Flush a file's data to durable storage so a subsequent rename + source-delete
+// cannot lose the destination on a crash. Opens the file by path, calls
+// FlushFileBuffers, then closes the handle. Returns false on any failure.
+bool flushFileToDisk(const std::string& path)
+{
+    HANDLE h = CreateFileA(path.c_str(),
+                           GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr,
+                           OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    BOOL ok = FlushFileBuffers(h);
+    CloseHandle(h);
+    return ok != 0;
+}
+
+}  // namespace
+
 namespace seal
 {
 
@@ -97,6 +121,10 @@ bool FileOperations::encryptFileTo(const std::string& srcPath,
     }
     out.close();
 
+    // Flush data to durable storage before the rename so a crash between
+    // the rename and the caller's DeleteFileA cannot lose the destination.
+    flushFileToDisk(tmpPath);
+
     if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
     {
         std::cerr << "(encrypt) cannot rename to destination: " << dstPath << "\n";
@@ -157,6 +185,8 @@ bool FileOperations::decryptFileTo(const std::string& srcPath,
             return false;
         }
         out.close();
+
+        flushFileToDisk(tmpPath);
 
         if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
         {
@@ -1031,6 +1061,8 @@ bool FileOperations::encryptFileStreaming(const std::string& srcPath,
 
     if (ioOk)
     {
+        flushFileToDisk(tmpPath);
+
         if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
         {
             std::cerr << "(encrypt-stream) cannot rename to destination: " << dstPath << "\n";
@@ -1045,10 +1077,22 @@ bool FileOperations::encryptFileStreaming(const std::string& srcPath,
     return false;
 }
 
-// Streaming decryption: reads the GCM tag from the end of the file, then
-// processes ciphertext in cfg::FILE_CHUNK increments via EVP_DecryptUpdate.
-// Authentication is verified at EVP_DecryptFinal_ex; on failure the temp
-// file is deleted and no output is produced.
+// Streaming decryption with two-pass authentication.
+//
+// Pass 1 (verify): streams the entire ciphertext through GCM decryption into
+// a scratch buffer (immediately wiped) and checks the authentication tag via
+// EVP_DecryptFinal_ex. No plaintext is written to disk during this pass.
+// If the tag fails, the function returns false without ever creating a file.
+//
+// Pass 2 (write): re-reads the ciphertext and decrypts again, this time
+// writing plaintext to a temp file. Since authentication passed in pass 1,
+// the data is known-authentic. The temp file is flushed, renamed to the
+// destination, and the key is wiped.
+//
+// The two-pass approach costs one extra file read and one extra decrypt, but
+// guarantees that unauthenticated plaintext never reaches disk -- critical for
+// a credential manager where tampered ciphertext must not produce recoverable
+// plaintext.
 template <secure_password SecurePwd>
 bool FileOperations::decryptFileStreaming(const std::string& srcPath,
                                           const std::string& dstPath,
@@ -1106,28 +1150,84 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
     {
         auto key = seal::Cryptography::deriveKey(pwd, std::span<const unsigned char>(salt));
 
-        seal::EvpCipherCtx ctx;
-        seal::Cryptography::opensslCheck(
-            EVP_DecryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
-            "DecryptInit(cipher) failed");
-        seal::Cryptography::opensslCheck(
-            EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)seal::cfg::IV_LEN, nullptr),
-            "SET_IVLEN failed");
-        seal::Cryptography::opensslCheck(
-            EVP_DecryptInit_ex(ctx.p, nullptr, nullptr, key.data(), iv.data()),
-            "DecryptInit(key/iv) failed");
-
-        // Feed AAD
-        if (!aadExpected.empty())
+        // Helper: initialise a GCM decrypt context with the shared key/IV/AAD.
+        auto initCtx = [&](seal::EvpCipherCtx& ctx)
         {
-            int tmp = 0;
             seal::Cryptography::opensslCheck(
-                EVP_DecryptUpdate(
-                    ctx.p, nullptr, &tmp, aadExpected.data(), (int)aadExpected.size()),
-                "DecryptUpdate(AAD) failed");
+                EVP_DecryptInit_ex(ctx.p, EVP_aes_256_gcm(), nullptr, nullptr, nullptr),
+                "DecryptInit(cipher) failed");
+            seal::Cryptography::opensslCheck(
+                EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_IVLEN, (int)seal::cfg::IV_LEN, nullptr),
+                "SET_IVLEN failed");
+            seal::Cryptography::opensslCheck(
+                EVP_DecryptInit_ex(ctx.p, nullptr, nullptr, key.data(), iv.data()),
+                "DecryptInit(key/iv) failed");
+            if (!aadExpected.empty())
+            {
+                int tmp = 0;
+                seal::Cryptography::opensslCheck(
+                    EVP_DecryptUpdate(
+                        ctx.p, nullptr, &tmp, aadExpected.data(), (int)aadExpected.size()),
+                    "DecryptUpdate(AAD) failed");
+            }
+        };
+
+        // Reusable buffers for both passes.
+        std::vector<unsigned char> ctBuf(seal::cfg::FILE_CHUNK);
+        std::vector<unsigned char> plainBuf(seal::cfg::FILE_CHUNK + 16);
+
+        // --- Pass 1: verify GCM tag without writing plaintext to disk ---
+        {
+            seal::EvpCipherCtx verifyCtx;
+            initCtx(verifyCtx);
+
+            size_t remaining = ctLen;
+            while (remaining > 0)
+            {
+                size_t toRead = std::min(remaining, seal::cfg::FILE_CHUNK);
+                in.read(reinterpret_cast<char*>(ctBuf.data()), (std::streamsize)toRead);
+                auto bytesRead = static_cast<size_t>(in.gcount());
+                if (bytesRead == 0)
+                    break;
+
+                int outlen = 0;
+                seal::Cryptography::opensslCheck(EVP_DecryptUpdate(verifyCtx.p,
+                                                                   plainBuf.data(),
+                                                                   &outlen,
+                                                                   ctBuf.data(),
+                                                                   static_cast<int>(bytesRead)),
+                                                 "DecryptUpdate(CT/verify) failed");
+                SecureZeroMemory(plainBuf.data(), static_cast<size_t>(outlen));
+                remaining -= bytesRead;
+            }
+
+            seal::Cryptography::opensslCheck(
+                EVP_CIPHER_CTX_ctrl(
+                    verifyCtx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tag.data()),
+                "SET_TAG failed");
+
+            unsigned char finBuf[16]{};
+            int fin = 0;
+            int ok = EVP_DecryptFinal_ex(verifyCtx.p, finBuf, &fin);
+            SecureZeroMemory(finBuf, sizeof(finBuf));
+
+            if (ok != 1)
+            {
+                seal::Cryptography::cleanseString(key);
+                SecureZeroMemory(ctBuf.data(), ctBuf.size());
+                SecureZeroMemory(plainBuf.data(), plainBuf.size());
+                std::cerr << "(decrypt-stream) authentication failed: " << srcPath << "\n";
+                return false;
+            }
         }
 
-        // Open output via atomic tmp file
+        // --- Pass 2: re-read and decrypt to disk (data is now authenticated) ---
+        in.clear();
+        in.seekg(ctStartPos);
+
+        seal::EvpCipherCtx writeCtx;
+        initCtx(writeCtx);
+
         std::string tmpPath = dstPath + ".tmp";
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
         if (!out)
@@ -1137,9 +1237,6 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
             return false;
         }
 
-        // Decrypt in chunks
-        std::vector<unsigned char> ctBuf(seal::cfg::FILE_CHUNK);
-        std::vector<unsigned char> plainBuf(seal::cfg::FILE_CHUNK + 16);
         size_t remaining = ctLen;
         bool ioOk = true;
 
@@ -1152,10 +1249,12 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
                 break;
 
             int outlen = 0;
-            seal::Cryptography::opensslCheck(
-                EVP_DecryptUpdate(
-                    ctx.p, plainBuf.data(), &outlen, ctBuf.data(), static_cast<int>(bytesRead)),
-                "DecryptUpdate(CT) failed");
+            seal::Cryptography::opensslCheck(EVP_DecryptUpdate(writeCtx.p,
+                                                               plainBuf.data(),
+                                                               &outlen,
+                                                               ctBuf.data(),
+                                                               static_cast<int>(bytesRead)),
+                                             "DecryptUpdate(CT/write) failed");
 
             out.write(reinterpret_cast<const char*>(plainBuf.data()), outlen);
             SecureZeroMemory(plainBuf.data(), static_cast<size_t>(outlen));
@@ -1178,38 +1277,34 @@ bool FileOperations::decryptFileStreaming(const std::string& srcPath,
             return false;
         }
 
-        // Set tag and finalize (authentication check)
+        // Finalize the write-pass context (tag is already verified; this
+        // call flushes any remaining block padding).
         seal::Cryptography::opensslCheck(
-            EVP_CIPHER_CTX_ctrl(ctx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tag.data()),
-            "SET_TAG failed");
+            EVP_CIPHER_CTX_ctrl(
+                writeCtx.p, EVP_CTRL_GCM_SET_TAG, (int)seal::cfg::TAG_LEN, tag.data()),
+            "SET_TAG(write) failed");
 
         unsigned char finBuf[16]{};
         int fin = 0;
-        int ok = EVP_DecryptFinal_ex(ctx.p, finBuf, &fin);
-        seal::Cryptography::cleanseString(key);
-        SecureZeroMemory(ctBuf.data(), ctBuf.size());
-        SecureZeroMemory(plainBuf.data(), plainBuf.size());
-
-        if (ok != 1)
-        {
-            SecureZeroMemory(finBuf, sizeof(finBuf));
-            std::cerr << "(decrypt-stream) authentication failed: " << srcPath << "\n";
-            out.close();
-            DeleteFileA(tmpPath.c_str());
-            return false;
-        }
-
+        (void)EVP_DecryptFinal_ex(writeCtx.p, finBuf, &fin);
         if (fin > 0)
         {
             out.write(reinterpret_cast<const char*>(finBuf), fin);
         }
         SecureZeroMemory(finBuf, sizeof(finBuf));
+
+        seal::Cryptography::cleanseString(key);
+        SecureZeroMemory(ctBuf.data(), ctBuf.size());
+        SecureZeroMemory(plainBuf.data(), plainBuf.size());
+
         out.flush();
         ioOk = out.good();
         out.close();
 
         if (ioOk)
         {
+            flushFileToDisk(tmpPath);
+
             if (!MoveFileExA(tmpPath.c_str(), dstPath.c_str(), MOVEFILE_REPLACE_EXISTING))
             {
                 std::cerr << "(decrypt-stream) cannot rename to destination: " << dstPath << "\n";
