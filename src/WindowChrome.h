@@ -22,7 +22,7 @@ namespace seal
 class TitleBarFilter : public QAbstractNativeEventFilter
 {
 public:
-    HWND m_Hwnd = nullptr;
+    HWND m_Hwnd = nullptr;  ///< Native window handle to filter events for.
 
     bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
 };

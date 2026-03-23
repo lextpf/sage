@@ -203,8 +203,8 @@ public:
      * Walks the directory with `FindFirstFileA`, skipping `.exe` and the
      * `seal` binary itself. Each file is encrypted or decrypted based on
      * its `.seal` extension and renamed in place after successful I/O.
-     * Subdirectories are processed in parallel via `std::async`
-     * (concurrency is bounded by a fixed semaphore of 16 concurrent operations).
+     * Subdirectories are processed in parallel via a fixed-size worker pool
+     * (`min(hardware_concurrency, 8)` threads, bounded task queue).
      *
      * @tparam SecurePwd Secure password container.
      * @param dir      Root directory path.

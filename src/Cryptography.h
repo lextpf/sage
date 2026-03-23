@@ -54,7 +54,7 @@ namespace seal
  * - hardenHeap() - enables heap termination on corruption
  * - hardenProcessAccess() - restricts DACL to block external memory reads
  * - disableCrashDumps() - suppresses WER and crash dumps
- * - detectDebugger() - aborts if a debugger is attached
+ * - detectDebugger() - terminates the process if a debugger is detected
  * - setSecureProcessMitigations() - enables DEP, CFG, ASLR, image-load policies
  * - trimWorkingSet() - flushes plaintext from physical RAM
  *
@@ -113,9 +113,10 @@ public:
     ///       does not write plaintext secrets to disk.
     static void disableCrashDumps();
 
-    /// @brief Detect attached debuggers and abort if found.
-    /// @post If `IsDebuggerPresent()` or `NtQueryInformationProcess` detects
-    ///       a debugger, the process calls `__fastfail` immediately.
+    /// @brief Detect attached debuggers and terminate the process if found.
+    /// @post If `IsDebuggerPresent()`, `CheckRemoteDebuggerPresent()`, or
+    ///       `NtQueryInformationProcess(ProcessDebugPort)` detects a debugger,
+    ///       the process calls `TerminateProcess` followed by `__fastfail`.
     static void detectDebugger();
 
     /// @brief Trim the working set via `SetProcessWorkingSetSize(-1, -1)`.
