@@ -277,6 +277,9 @@ Item {
                 source: auroraGradient
                 maskEnabled: true
                 maskSource: auroraMask
+                maskThresholdMin: 0.15
+                maskSpreadAtMin: 0.15
+                autoPaddingEnabled: false
                 visible: false
             }
 
