@@ -427,92 +427,48 @@ Item {
     // Spacer pushes vault control buttons to the right edge.
     Item { Layout.fillWidth: true }
 
-    // Inline component matching TintedButton styling from ActionBar.
-    // Uses the iconBtn palette with same-hue reduced-opacity disabled states.
-    component HeaderButton: Button {
-        id: hBtn
-        property string faIcon: ""
-        property color tintTop:       Theme.iconBtnTop
-        property color tintEnd:       Theme.iconBtnEnd
-        property color tintHoverTop:  Theme.iconBtnHoverTop
-        property color tintHoverEnd:  Theme.iconBtnHoverEnd
-        property color tintPressed:   Theme.iconBtnPressed
-        property color tintText:      Theme.textIcon
-        property color tintTextHover: Theme.textSecondary
-        readonly property color _tintBorder: Qt.rgba(tintEnd.r, tintEnd.g, tintEnd.b, Math.min(tintEnd.a + 0.18, 1.0))
-        leftPadding: 14
-        rightPadding: 14
-
-        // Disabled: same hue at reduced opacity.
-        readonly property color _disText: Qt.rgba(tintText.r, tintText.g, tintText.b, 0.32)
-        readonly property color _disTop:  Qt.rgba(tintTop.r, tintTop.g, tintTop.b, tintTop.a * 0.35)
-        readonly property color _disEnd:  Qt.rgba(tintEnd.r, tintEnd.g, tintEnd.b, tintEnd.a * 0.35)
-
-        HoverHandler { id: hBtnHover; cursorShape: Qt.PointingHandCursor }
-
-        contentItem: Row {
-            spacing: 6
-            anchors.centerIn: parent
-            SvgIcon {
-                source: hBtn.faIcon
-                width: Theme.iconSizeMedium
-                height: Theme.iconSizeMedium
-                color: !hBtn.enabled ? hBtn._disText : hBtn.hovered ? hBtn.tintTextHover : hBtn.tintText
-                visible: hBtn.faIcon !== ""
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-            Text {
-                text: hBtn.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.DemiBold
-                color: !hBtn.enabled ? hBtn._disText : hBtn.hovered ? hBtn.tintTextHover : hBtn.tintText
-                anchors.verticalCenter: parent.verticalCenter
-                Behavior on color { ColorAnimation { duration: Theme.hoverDuration } }
-            }
-        }
-
-        scale: pressed ? 0.97 : 1.0
-        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 2.0 } }
-
-        background: Rectangle {
-            implicitWidth: 100
-            implicitHeight: 38
-            radius: Theme.radiusMedium
-            clip: true
-            gradient: Gradient {
-                GradientStop { position: 0; color: !hBtn.enabled ? hBtn._disTop : hBtn.pressed ? hBtn.tintPressed : hBtn.hovered ? hBtn.tintHoverTop : hBtn.tintTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                GradientStop { position: 1; color: !hBtn.enabled ? hBtn._disEnd : hBtn.pressed ? hBtn.tintPressed : hBtn.hovered ? hBtn.tintHoverEnd : hBtn.tintEnd; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-            }
-            border.width: 1
-            border.color: !hBtn.enabled ? Theme.borderDim
-                        : hBtn.hovered ? Theme.borderHover
-                        : hBtn._tintBorder
-            Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
-
-            RippleEffect { id: hBtnRipple; baseColor: Qt.rgba(hBtn.tintText.r, hBtn.tintText.g, hBtn.tintText.b, 0.30) }
-        }
-        onPressed: hBtnRipple.trigger(hBtnHover.point.position.x, hBtnHover.point.position.y)
-    }
-
-    HeaderButton {
+    // Vault control buttons use the shared TintedButton with the iconBtn palette.
+    TintedButton {
         text: "Load"
         faIcon: Theme.iconFolderOpen
+        tintTop:       Theme.iconBtnTop
+        tintEnd:       Theme.iconBtnEnd
+        tintHoverTop:  Theme.iconBtnHoverTop
+        tintHoverEnd:  Theme.iconBtnHoverEnd
+        tintPressed:   Theme.iconBtnPressed
+        tintText:      Theme.textIcon
+        tintTextHover: Theme.textSecondary
+        background.implicitWidth: 100
         onClicked: root.loadClicked()
     }
 
-    HeaderButton {
+    TintedButton {
         text: "Save"
         faIcon: Theme.iconFloppyDisk
         enabled: root.vaultLoaded
+        tintTop:       Theme.iconBtnTop
+        tintEnd:       Theme.iconBtnEnd
+        tintHoverTop:  Theme.iconBtnHoverTop
+        tintHoverEnd:  Theme.iconBtnHoverEnd
+        tintPressed:   Theme.iconBtnPressed
+        tintText:      Theme.textIcon
+        tintTextHover: Theme.textSecondary
+        background.implicitWidth: 100
         onClicked: root.saveClicked()
     }
 
-    HeaderButton {
+    TintedButton {
         text: "Unload"
         faIcon: Theme.iconEject
         enabled: root.vaultLoaded
+        tintTop:       Theme.iconBtnTop
+        tintEnd:       Theme.iconBtnEnd
+        tintHoverTop:  Theme.iconBtnHoverTop
+        tintHoverEnd:  Theme.iconBtnHoverEnd
+        tintPressed:   Theme.iconBtnPressed
+        tintText:      Theme.textIcon
+        tintTextHover: Theme.textSecondary
+        background.implicitWidth: 100
         onClicked: root.unloadClicked()
     }
     }  // RowLayout
