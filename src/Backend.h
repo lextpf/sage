@@ -59,6 +59,34 @@ class WindowController;
  * 5. unloadVault() clears records but retains the master password;
  *    call cleanup() to wipe the password and release all resources.
  *
+ * ## :material-key: Pending-Action Pattern
+ *
+ * Many operations (loadVault, addAccount, armFill, ...) require the master
+ * password. When the password is not yet set, the caller stashes a lambda
+ * in `m_PendingAction` and emits `passwordRequired()`. Once the user
+ * enters the password via `submitPassword()`, the stashed action executes
+ * automatically.
+ *
+ * ```mermaid
+ * ---
+ * config:
+ *   theme: dark
+ *   look: handDrawn
+ * ---
+ * sequenceDiagram
+ *     participant C as Caller (e.g. loadVault)
+ *     participant B as Backend
+ *     participant Q as QML UI
+ *
+ *     C->>B: loadVault()
+ *     B->>B: m_PendingAction = [loadVault lambda]
+ *     B->>Q: passwordRequired()
+ *     Q->>B: submitPassword(pw)
+ *     B->>B: store pw in locked memory
+ *     B->>B: m_PendingAction()
+ *     B->>C: (loadVault resumes)
+ * ```
+ *
  * ## :material-keyboard: Auto-Fill
  *
  * armFill() arms a global mouse/keyboard hook (via FillController).
@@ -232,20 +260,27 @@ public:
     Q_INVOKABLE QVariantMap decryptAccountForEdit(int index);
 
     /**
-     * @brief Auto-type the username for a credential into the focused window.
+     * @brief Auto-type the full login sequence into the focused window.
      *
-     * Decrypts on demand and sends keystrokes via SendInput.
+     * Decrypts the credential on demand, types the username via
+     * synthesised keystrokes (`SendInput`), sends a Tab key to advance
+     * focus, then types the password. A 3-second countdown gives the
+     * user time to focus the target field before typing begins.
      *
      * @param index Row index of the record
+     * @see typePassword (types only the password field)
      */
     Q_INVOKABLE void typeLogin(int index);
 
     /**
-     * @brief Auto-type the password for a credential into the focused window.
+     * @brief Auto-type only the password for a credential into the focused window.
      *
-     * Decrypts on demand and sends keystrokes via SendInput.
+     * Decrypts the credential on demand and types the password field via
+     * synthesised keystrokes (`SendInput`). Unlike typeLogin(), this does
+     * **not** type the username or send a Tab key.
      *
      * @param index Row index of the record
+     * @see typeLogin (types username + Tab + password)
      */
     Q_INVOKABLE void typePassword(int index);
 
@@ -344,8 +379,22 @@ public:
     /// @brief Toggle CLI mode (replaces vault UI with embedded terminal).
     Q_INVOKABLE void toggleCliMode();
 
-    /// @brief Execute a command in the embedded CLI panel.
-    /// @param command The command string entered by the user.
+    /**
+     * @brief Execute a command in the embedded CLI panel.
+     *
+     * Supported input types (tried in order):
+     * - **Built-in commands**: `:help`, `:open`, `:copy`, `:clear`, `:cls`,
+     *   `:gen [len]`, `:qr`, `:fill <index>`, `:hex`, `:unhex` (no password needed).
+     * - **File/directory paths**: encrypt or decrypt based on `.seal` extension.
+     * - **Hex tokens**: decrypt and copy to clipboard.
+     * - **Base64 ciphertext**: decrypt and copy to clipboard.
+     * - **Plain text**: encrypt and emit both hex and base64 output.
+     *
+     * Commands that require the master password trigger the password dialog
+     * via the pending-action pattern if the password is not yet set.
+     *
+     * @param command The command string entered by the user.
+     */
     Q_INVOKABLE void executeCliCommand(const QString& command);
 
     /// @brief Handle QR capture result when in CLI mode.
@@ -513,7 +562,10 @@ private:
 
     QString m_CurrentVaultPath;                ///< Path to the currently loaded vault file.
     std::vector<seal::VaultRecord> m_Records;  ///< In-memory vault records.
-    QString m_AutoEncryptDirectory;            ///< Directory for auto-encrypt on save.
+    uint64_t m_RecordsGeneration = 0;          ///< Monotonic counter incremented on every records
+                                       ///< mutation so borrowed-pointer holders (FillController,
+                                       ///< VaultListModel) can detect stale references.
+    QString m_AutoEncryptDirectory;  ///< Directory for auto-encrypt on save.
 
     int m_SelectedIndex = -1;                        ///< Currently selected row (-1 = none).
     QString m_StatusText = QStringLiteral("Ready");  ///< Status bar text.

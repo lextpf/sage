@@ -27,6 +27,10 @@ QVariant VaultListModel::data(const QModelIndex& index, int role) const
         return {};
     if (!m_Records)
         return {};
+    // Generation check: if the owner mutated the records since our last
+    // setRecords() call, the filtered indices may reference stale storage.
+    if (m_OwnerGeneration && *m_OwnerGeneration != m_SnapshotGeneration)
+        return {};
 
     // Translate the QML-visible row number into the real record index.
     int realIdx = m_FilteredIndices[index.row()];
@@ -59,9 +63,12 @@ QHash<int, QByteArray> VaultListModel::roleNames() const
             {static_cast<int>(Roles::RecordIndex), "recordIndex"}};
 }
 
-void VaultListModel::setRecords(const std::vector<seal::VaultRecord>* records)
+void VaultListModel::setRecords(const std::vector<seal::VaultRecord>* records,
+                                const uint64_t* ownerGeneration)
 {
     m_Records = records;
+    m_OwnerGeneration = ownerGeneration;
+    m_SnapshotGeneration = ownerGeneration ? *ownerGeneration : 0;
     refresh();
 }
 
@@ -77,6 +84,11 @@ void VaultListModel::setFilter(const QString& filter)
 void VaultListModel::refresh()
 {
     int oldCount = (int)m_FilteredIndices.size();
+    // Sync the generation snapshot so data() doesn't reject requests as
+    // stale. The owner bumps the counter before calling refresh(), so the
+    // snapshot must be updated here to match.
+    if (m_OwnerGeneration)
+        m_SnapshotGeneration = *m_OwnerGeneration;
     // beginResetModel / endResetModel tells every connected QML view to
     // discard its cached state and re-query all rows.  This is simpler
     // (and fast enough for our data size) than emitting fine-grained

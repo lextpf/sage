@@ -61,7 +61,7 @@ Backend::Backend(QObject* parent)
       m_FillController(new FillController(this)),
       m_WindowController(new WindowController(this))
 {
-    m_Model->setRecords(&m_Records);
+    m_Model->setRecords(&m_Records, &m_RecordsGeneration);
 
     // Relay WindowController state to QML.
     connect(m_WindowController,
@@ -358,6 +358,7 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
     {
         ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
         m_Records = seal::loadVaultIndex(filePath, m_Password);
+        ++m_RecordsGeneration;
         m_CurrentVaultPath = filePath;
         qCInfo(logBackend) << "vault loaded:" << m_Records.size() << "record(s)";
         refreshModel();
@@ -474,6 +475,7 @@ void Backend::unloadVault()
     cancelFillIfArmed();
     qCInfo(logBackend) << "unloadVault: clearing" << m_Records.size() << "record(s)";
     m_Records.clear();
+    ++m_RecordsGeneration;
     m_CurrentVaultPath.clear();
     refreshModel();
     setStatus("Vault unloaded");
@@ -510,6 +512,7 @@ void Backend::addAccount(const QString& service, const QString& username, const 
                 service.toUtf8().toStdString(), *secUser, *secPass, m_Password);
             seal::Cryptography::cleanseString(*secUser, *secPass);
             m_Records.push_back(std::move(newRecord));
+            ++m_RecordsGeneration;
             qCInfo(logBackend) << "addAccount (deferred): service=" << service
                                << "total=" << m_Records.size();
             refreshModel();
@@ -534,6 +537,7 @@ void Backend::addAccount(const QString& service, const QString& username, const 
 
     cancelFillIfArmed();
     m_Records.push_back(std::move(newRecord));
+    ++m_RecordsGeneration;
     qCInfo(logBackend) << "addAccount: service=" << service << "total=" << m_Records.size();
     refreshModel();
     setStatus("Account added");
@@ -579,6 +583,7 @@ void Backend::editAccount(int index,
     ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     m_Records[index] = seal::encryptCredential(
         service.toUtf8().toStdString(), secUsername, secPassword, m_Password);
+    ++m_RecordsGeneration;
 
     seal::Cryptography::cleanseString(secUsername, secPassword);
 
@@ -597,6 +602,7 @@ void Backend::deleteAccount(int index)
     cancelFillIfArmed();
     m_Records[index].deleted = true;
     m_Records[index].dirty = true;
+    ++m_RecordsGeneration;
     qCInfo(logBackend) << "deleteAccount: index=" << index << "(soft-delete)";
     refreshModel();
     setStatus("Account deleted");
@@ -869,33 +875,41 @@ void Backend::scheduleTypingAction(int index, TypingMode mode, const QString& la
                     // The GUI thread could process events that mutate those members
                     // while the worker is running.
                     m_DPAPIGuard.unprotect();
-                    auto record = m_Records[index];
-                    seal::basic_secure_string<wchar_t> pw;
-                    pw.s.assign(m_Password.s.begin(), m_Password.s.end());
+                    try
+                    {
+                        auto record = m_Records[index];
+                        seal::basic_secure_string<wchar_t> pw;
+                        pw.s.assign(m_Password.s.begin(), m_Password.s.end());
 
-                    auto* worker = QThread::create(
-                        [record = std::move(record), pw = std::move(pw), mode]() mutable
-                        {
-                            if (mode == Backend::TypingMode::Login)
-                                doTypeLogin(record, pw);
-                            else
-                                doTypePassword(record, pw);
-                            seal::Cryptography::cleanseString(pw);
-                        });
-                    connect(worker,
-                            &QThread::finished,
-                            this,
-                            [this, worker, label, service]()
+                        auto* worker = QThread::create(
+                            [record = std::move(record), pw = std::move(pw), mode]() mutable
                             {
-                                worker->deleteLater();
-                                m_DPAPIGuard.reprotect();
-                                m_CountdownText.clear();
-                                emit countdownTextChanged();
-                                m_Busy = false;
-                                emit busyChanged();
-                                setStatus(QString("%1 typed for '%2'").arg(label, service));
+                                if (mode == Backend::TypingMode::Login)
+                                    doTypeLogin(record, pw);
+                                else
+                                    doTypePassword(record, pw);
+                                seal::Cryptography::cleanseString(pw);
                             });
-                    worker->start();
+                        connect(worker,
+                                &QThread::finished,
+                                this,
+                                [this, worker, label, service]()
+                                {
+                                    worker->deleteLater();
+                                    m_DPAPIGuard.reprotect();
+                                    m_CountdownText.clear();
+                                    emit countdownTextChanged();
+                                    m_Busy = false;
+                                    emit busyChanged();
+                                    setStatus(QString("%1 typed for '%2'").arg(label, service));
+                                });
+                        worker->start();
+                    }
+                    catch (...)
+                    {
+                        m_DPAPIGuard.reprotect();
+                        throw;
+                    }
                 }
             });
 
@@ -1000,7 +1014,16 @@ void Backend::armFill(int index)
 
     qCInfo(logBackend) << "armFill: index=" << index;
     m_DPAPIGuard.unprotect();
-    const bool armed = m_FillController->arm(index, m_Records, m_Password);
+    bool armed = false;
+    try
+    {
+        armed = m_FillController->arm(index, m_Records, m_Password, m_RecordsGeneration);
+    }
+    catch (...)
+    {
+        m_DPAPIGuard.reprotect();
+        throw;
+    }
     if (!armed)
     {
         // If hook install failed, don't apply "armed" UI state/minimize behavior.

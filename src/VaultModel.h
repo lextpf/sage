@@ -81,8 +81,11 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     /// @brief Set the backing record store (non-owning pointer).
-    /// @param records Pointer to the vault record vector (must outlive this model, may be null).
-    void setRecords(const std::vector<seal::VaultRecord>* records);
+    /// @param records         Pointer to the vault record vector (must outlive this model, may be
+    /// null).
+    /// @param ownerGeneration Pointer to owner's monotonic mutation counter (may be null).
+    void setRecords(const std::vector<seal::VaultRecord>* records,
+                    const uint64_t* ownerGeneration = nullptr);
 
     /// @brief Set the current platform-name filter text.
     /// @param filter Substring to match (empty shows all non-deleted records).
@@ -106,6 +109,8 @@ private:
     void rebuildFilteredIndices();
 
     const std::vector<seal::VaultRecord>* m_Records = nullptr;
+    const uint64_t* m_OwnerGeneration = nullptr;  ///< Owner's mutation counter (null = unchecked).
+    uint64_t m_SnapshotGeneration = 0;  ///< Generation at last setRecords(); stale = skip.
     QString m_Filter;
     std::vector<int> m_FilteredIndices;
 };
