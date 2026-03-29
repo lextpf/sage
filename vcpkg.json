@@ -2,8 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "seal",
   "version": "1.0.0",
-  "description": "AES-256-GCM encrypt/decrypt console utility with locked memory and guard pages",
-  "homepage": "https://github.com/yourusername/seal",
+  "description": "AES-256-GCM encryption and credential manager with Qt6 GUI and hardened memory",
+  "homepage": "https://github.com/lextpf/seal",
   "license": "MIT",
   "dependencies": [
     "openssl",
