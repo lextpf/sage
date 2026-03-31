@@ -1,7 +1,7 @@
 <div align="center">
 
 # seal
-**AES-256-GCM with Qt6 GUI providing on-demand credential management**
+**AES-256-GCM credential manager with Qt6 GUI**
 
 🛡️ [Features](#features) | 🚅 [Quick Start](#quick-start) | 📗 [Documentation](#documentation) | 🤝 [Contributing](./CONTRIBUTING.md)
 
