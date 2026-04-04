@@ -498,8 +498,20 @@ template <secure_password SecurePwd>
 bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& password)
 {
     std::string t = seal::utils::stripQuotes(seal::utils::trim(raw));
+
+    // Strip control characters that may slip through from console paste.
+    std::erase_if(t, [](unsigned char c) { return c < 32 || c == 127; });
+
     if (t.empty())
         return false;
+
+    // Remove a trailing path separator so GetFileAttributesA does not reject
+    // non-root directory paths like "C:\folder\sub\".  Root paths ("C:\")
+    // are left untouched.
+    while (t.size() > 1 && (t.back() == '\\' || t.back() == '/') && !(t.size() == 3 && t[1] == ':'))
+    {
+        t.pop_back();
+    }
 
     std::string base = seal::utils::basenameA(t);
     if (seal::utils::endsWithCi(base, ".exe") || _stricmp(base.c_str(), "seal") == 0)
@@ -517,7 +529,19 @@ bool FileOperations::processFilePath(const std::string& raw, const SecurePwd& pa
 
     if (seal::utils::isDirectoryA(t))
     {
-        return processDirectory(t, password, true);
+        (void)processDirectory(t, password, true);
+        return true;  // recognized as a directory; never fall through to text encryption
+    }
+
+    // Fallback: std::filesystem may resolve paths that GetFileAttributesA rejects
+    // (e.g. long paths, forward slashes, UNC edge cases).
+    {
+        std::error_code ec;
+        if (std::filesystem::is_directory(t, ec))
+        {
+            (void)processDirectory(t, password, true);
+            return true;
+        }
     }
 
     if (!seal::utils::fileExistsA(t))

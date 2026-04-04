@@ -10,6 +10,7 @@
 
 #include <windows.h>
 
+#include <cstring>
 #include <span>
 #include <string>
 
@@ -105,6 +106,51 @@ bool CliDispatchBase64(const std::string& input, const CliDispatchCallbacks& cb)
         // Not valid base64 ciphertext, fall through to encrypt
     }
     return false;
+}
+
+void CliDispatchDirectory(const std::string& dir, const CliDispatchCallbacks& cb)
+{
+    WIN32_FIND_DATAA fd{};
+    std::string pattern = seal::utils::joinPath(dir, "*");
+    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        cb.output(QString("(dir) cannot list: %1").arg(QString::fromStdString(dir)));
+        return;
+    }
+
+    int total = 0;
+
+    do
+    {
+        const char* name = fd.cFileName;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+            continue;
+
+        std::string full = seal::utils::joinPath(dir, name);
+
+        if (seal::utils::endsWithCi(name, ".exe") || _stricmp(name, "seal") == 0)
+        {
+            cb.output(QString("(skipped) %1").arg(QString::fromStdString(full)));
+            continue;
+        }
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            CliDispatchDirectory(full, cb);
+            continue;
+        }
+
+        ++total;
+        CliDispatchFile(full, cb);
+
+    } while (FindNextFileA(h, &fd));
+
+    FindClose(h);
+
+    cb.output(QString("[dir] %1: %2 files processed").arg(QString::fromStdString(dir)).arg(total));
 }
 
 void CliDispatchEncrypt(const std::string& input, const CliDispatchCallbacks& cb)

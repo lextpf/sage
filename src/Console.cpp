@@ -477,6 +477,12 @@ bool readBulkLinesDualOrEsc(std::pair<std::vector<std::string>, bool>& out)
             continue;
         }
 
+        // Drop remaining control characters (e.g. Ctrl+V = 0x16 injected by
+        // some console hosts during paste) so they don't silently corrupt
+        // paths or other input.
+        if (ch < 32 || ch == 127)
+            continue;
+
         cur.push_back(static_cast<char>(ch));
         std::cout << static_cast<char>(ch) << std::flush;
     }

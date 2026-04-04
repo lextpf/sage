@@ -27,6 +27,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -1221,10 +1222,26 @@ void Backend::executeCliCommand(const QString& command)
         ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
         std::string stripped = seal::utils::stripQuotes(seal::utils::trim(input));
 
+        // Strip control characters that may survive from clipboard paste.
+        std::erase_if(stripped, [](unsigned char c) { return c < 32 || c == 127; });
+
+        // Remove trailing path separators so GetFileAttributesA does not reject
+        // non-root directory paths like "C:\folder\sub\".
+        while (stripped.size() > 1 && (stripped.back() == '\\' || stripped.back() == '/') &&
+               !(stripped.size() == 3 && stripped[1] == ':'))
+        {
+            stripped.pop_back();
+        }
+
         seal::CliDispatchCallbacks dcb{
             .output = [this](const QString& s) { emit cliOutputReady(s); }, .password = m_Password};
 
-        // Priority 1: file/directory path
+        // Priority 1: file or directory path
+        if (seal::utils::isDirectoryA(stripped))
+        {
+            seal::CliDispatchDirectory(stripped, dcb);
+            return;
+        }
         if (seal::utils::fileExistsA(stripped))
         {
             seal::CliDispatchFile(stripped, dcb);

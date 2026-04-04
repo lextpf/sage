@@ -30,6 +30,9 @@ struct CliDispatchCallbacks
 /// @brief Dispatch a file path: encrypt or decrypt based on `.seal` extension.
 void CliDispatchFile(const std::string& stripped, const CliDispatchCallbacks& cb);
 
+/// @brief Recursively encrypt or decrypt all files in a directory.
+void CliDispatchDirectory(const std::string& dir, const CliDispatchCallbacks& cb);
+
 /// @brief Dispatch hex tokens: decrypt each and copy to clipboard.
 void CliDispatchHexTokens(const std::string& input, const CliDispatchCallbacks& cb);
 
