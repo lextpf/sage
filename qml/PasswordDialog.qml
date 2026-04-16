@@ -25,6 +25,7 @@ Popup {
     id: root
 
     property string errorMessage: ""  // Non-empty shows a red error line (e.g. "Wrong password")
+    readonly property color shellTone: Theme.accent
 
     signal accepted(string password)
     signal qrRequested()
@@ -46,14 +47,14 @@ Popup {
 
     enter: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
-            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 175; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 190; easing.type: Easing.OutBack; easing.overshoot: 1.15 }
         }
     }
     exit: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120; easing.type: Easing.InCubic }
-            NumberAnimation { property: "scale"; from: 1; to: 0.92; duration: 120; easing.type: Easing.InCubic }
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 130; easing.type: Easing.InCubic }
+            NumberAnimation { property: "scale"; from: 1; to: 0.95; duration: 130; easing.type: Easing.InCubic }
         }
     }
 
@@ -62,6 +63,36 @@ Popup {
         radius: Theme.radiusLarge
         border.width: 1
         border.color: Theme.borderMedium
+        clip: true
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 54
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.18) }
+                GradientStop { position: 1.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.0) }
+            }
+        }
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 1
+            color: Theme.dialogEdgeLight
+            opacity: 0.9
+        }
+
+        Rectangle {
+            width: 170
+            height: 124
+            radius: 85
+            x: -26
+            y: -54
+            color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.10)
+        }
     }
 
     Overlay.modal: Rectangle {
@@ -77,7 +108,7 @@ Popup {
     contentItem: ColumnLayout {
         spacing: 0
 
-        // Title row
+        // Title row with a semantic badge matching the dialog tone.
         RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: 24
@@ -85,11 +116,24 @@ Popup {
             Layout.rightMargin: 24
             spacing: 10
 
-            SvgIcon {
-                source: Theme.iconLock
-                color: Theme.accent
-                width: Theme.iconSizeMedium
-                height: Theme.iconSizeMedium
+            Rectangle {
+                width: Theme.px(30)
+                height: Theme.px(30)
+                radius: width / 2
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.20) }
+                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.08) }
+                }
+                border.width: 1
+                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.26)
+
+                SvgIcon {
+                    source: Theme.iconLock
+                    color: root.shellTone
+                    width: Theme.px(14)
+                    height: Theme.px(14)
+                    anchors.centerIn: parent
+                }
             }
 
             Text {
@@ -257,7 +301,11 @@ Popup {
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                    RippleEffect { id: qrRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
+                    RippleEffect {
+                        id: qrRipple
+                        baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35)
+                        cornerRadius: parent.radius
+                    }
                 }
                 onPressed: qrRipple.trigger(qrHover.point.position.x, qrHover.point.position.y)
             }
@@ -302,7 +350,11 @@ Popup {
                     border.color: !okButton.enabled ? Theme.borderSubtle : okButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                    RippleEffect { id: pwOkRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
+                    RippleEffect {
+                        id: pwOkRipple
+                        baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                        cornerRadius: parent.radius
+                    }
                 }
                 onPressed: pwOkRipple.trigger(pwOkHover.point.position.x, pwOkHover.point.position.y)
             }

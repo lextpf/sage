@@ -14,6 +14,8 @@ Popup {
 
     property string title: "Confirm"
     property string message: ""
+    property color tone: Theme.btnDeleteText
+    property string titleIcon: Theme.iconTrash
 
     signal confirmed()
 
@@ -23,17 +25,17 @@ Popup {
     padding: 0
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
-    // Scale+fade transition.
+    // Slightly weightier scale+fade transition to match the richer dialog shell.
     enter: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
-            NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 175; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 190; easing.type: Easing.OutBack; easing.overshoot: 1.15 }
         }
     }
     exit: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120; easing.type: Easing.InCubic }
-            NumberAnimation { property: "scale"; from: 1; to: 0.92; duration: 120; easing.type: Easing.InCubic }
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 130; easing.type: Easing.InCubic }
+            NumberAnimation { property: "scale"; from: 1; to: 0.95; duration: 130; easing.type: Easing.InCubic }
         }
     }
 
@@ -42,6 +44,36 @@ Popup {
         radius: Theme.radiusLarge
         border.width: 1
         border.color: Theme.borderMedium
+        clip: true
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 50
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.18) }
+                GradientStop { position: 1.0; color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.0) }
+            }
+        }
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 1
+            color: Theme.dialogEdgeLight
+            opacity: 0.9
+        }
+
+        Rectangle {
+            width: 160
+            height: 120
+            radius: 80
+            x: -28
+            y: -54
+            color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)
+        }
     }
 
     // Overlay dimming.
@@ -52,20 +84,33 @@ Popup {
     contentItem: ColumnLayout {
         spacing: 0
 
-        // Title row with red-tinted trash icon.
+        // Title row with a semantic badge anchored to the dialog tone.
         RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: 24
             Layout.leftMargin: 24
             Layout.rightMargin: 24
-            spacing: 8
+            spacing: 10
 
-            SvgIcon {
-                source: Theme.iconTrash
-                width: Theme.px(18)
-                height: Theme.px(18)
-                color: Theme.btnDeleteText
+            Rectangle {
                 Layout.alignment: Qt.AlignVCenter
+                width: Theme.px(28)
+                height: Theme.px(28)
+                radius: width / 2
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.20) }
+                    GradientStop { position: 1; color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.08) }
+                }
+                border.width: 1
+                border.color: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.28)
+
+                SvgIcon {
+                    source: root.titleIcon
+                    width: Theme.px(14)
+                    height: Theme.px(14)
+                    color: root.tone
+                    anchors.centerIn: parent
+                }
             }
 
             Text {
@@ -136,7 +181,11 @@ Popup {
                                 : Theme.borderSubtle
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                    RippleEffect { id: noRipple; baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35) }
+                    RippleEffect {
+                        id: noRipple
+                        baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35)
+                        cornerRadius: parent.radius
+                    }
                 }
                 onPressed: noRipple.trigger(noHover.point.position.x, noHover.point.position.y)
             }
@@ -176,7 +225,11 @@ Popup {
                     border.color: yesButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                    RippleEffect { id: yesRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
+                    RippleEffect {
+                        id: yesRipple
+                        baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                        cornerRadius: parent.radius
+                    }
                 }
                 onPressed: yesRipple.trigger(yesHover.point.position.x, yesHover.point.position.y)
             }

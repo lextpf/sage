@@ -330,6 +330,7 @@ ApplicationWindow {
             SearchBar {
                 Layout.fillWidth: true
                 visible: !Backend.isCliMode
+                resultCount: Backend.vaultModel.count
                 onSearchRequested: function(text) { Backend.searchFilter = text }
             }
 
@@ -478,6 +479,7 @@ ApplicationWindow {
     // just for a different button layout.
     ConfirmDialog {
         id: errorDialog
+        tone: Theme.textError
         contentItem: ColumnLayout {
             spacing: 0
 
@@ -488,12 +490,25 @@ ApplicationWindow {
                 Layout.rightMargin: 24
                 spacing: 8
 
-                SvgIcon {
-                    source: Theme.iconTriangleExclamation
-                    width: Theme.px(18)
-                    height: Theme.px(18)
-                    color: Theme.textError
+                Rectangle {
                     Layout.alignment: Qt.AlignVCenter
+                    width: Theme.px(28)
+                    height: Theme.px(28)
+                    radius: width / 2
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.20) }
+                        GradientStop { position: 1; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.08) }
+                    }
+                    border.width: 1
+                    border.color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.26)
+
+                    SvgIcon {
+                        source: Theme.iconTriangleExclamation
+                        width: Theme.px(14)
+                        height: Theme.px(14)
+                        color: Theme.textError
+                        anchors.centerIn: parent
+                    }
                 }
 
                 Text {
@@ -559,7 +574,11 @@ ApplicationWindow {
                         border.color: errorOkButton.hovered ? Theme.borderBright : Theme.borderBtn
                         Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                        RippleEffect { id: errorOkRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
+                        RippleEffect {
+                            id: errorOkRipple
+                            baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                            cornerRadius: parent.radius
+                        }
                     }
                     onPressed: errorOkRipple.trigger(errorOkHover.point.position.x, errorOkHover.point.position.y)
                 }
@@ -570,6 +589,7 @@ ApplicationWindow {
     // Success/info messages (e.g. "Vault saved", "Directory encrypted").
     ConfirmDialog {
         id: infoDialog
+        tone: Theme.accent
 
         contentItem: ColumnLayout {
             spacing: 0
@@ -581,12 +601,25 @@ ApplicationWindow {
                 Layout.rightMargin: 24
                 spacing: 8
 
-                SvgIcon {
-                    source: Theme.iconCircleCheck
-                    width: Theme.px(18)
-                    height: Theme.px(18)
-                    color: Theme.accent
+                Rectangle {
                     Layout.alignment: Qt.AlignVCenter
+                    width: Theme.px(28)
+                    height: Theme.px(28)
+                    radius: width / 2
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.20) }
+                        GradientStop { position: 1; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08) }
+                    }
+                    border.width: 1
+                    border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.26)
+
+                    SvgIcon {
+                        source: Theme.iconCircleCheck
+                        width: Theme.px(14)
+                        height: Theme.px(14)
+                        color: Theme.accent
+                        anchors.centerIn: parent
+                    }
                 }
 
                 Text {
@@ -652,7 +685,11 @@ ApplicationWindow {
                         border.color: infoOkButton.hovered ? Theme.borderBright : Theme.borderBtn
                         Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
-                        RippleEffect { id: infoOkRipple; baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35) }
+                        RippleEffect {
+                            id: infoOkRipple
+                            baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                            cornerRadius: parent.radius
+                        }
                     }
                     onPressed: infoOkRipple.trigger(infoOkHover.point.position.x, infoOkHover.point.position.y)
                 }
