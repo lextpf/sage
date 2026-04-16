@@ -9,10 +9,363 @@
 #include <QtGui/QWindow>
 
 #include <oleacc.h>
+#include <array>
 #include <memory>
 
 namespace seal
 {
+
+namespace
+{
+
+constexpr int kMaxUiaAncestorDepth = 8;
+constexpr int kMaxUiaDescendantDepth = 6;
+constexpr int kMaxUiaDescendantNodes = 64;
+
+struct UiaPasswordObservation
+{
+    bool observed = false;
+    bool isPassword = false;
+    QString source;
+    QString matchedText;
+};
+
+QString takeBstr(BSTR text)
+{
+    if (!text)
+        return {};
+    QString out = QString::fromWCharArray(text, SysStringLen(text));
+    SysFreeString(text);
+    return out;
+}
+
+QString currentStringProperty(IUIAutomationElement* element, PROPERTYID propertyId)
+{
+    if (!element)
+        return {};
+
+    VARIANT val;
+    VariantInit(&val);
+
+    QString out;
+    const HRESULT hr = element->GetCurrentPropertyValue(propertyId, &val);
+    if (SUCCEEDED(hr))
+    {
+        if (val.vt == VT_BSTR && val.bstrVal)
+            out = QString::fromWCharArray(val.bstrVal, SysStringLen(val.bstrVal));
+        else if (val.vt == (VT_BSTR | VT_BYREF) && val.pbstrVal && *val.pbstrVal)
+            out = QString::fromWCharArray(*val.pbstrVal, SysStringLen(*val.pbstrVal));
+    }
+
+    VariantClear(&val);
+    return out;
+}
+
+bool containsPasswordHint(const QString& rawText)
+{
+    const QString text = rawText.trimmed().toLower();
+    if (text.isEmpty())
+        return false;
+
+    static const std::array<QStringView, 5> kPasswordHints = {
+        QStringView{u"password"},
+        QStringView{u"passwort"},
+        QStringView{u"passwd"},
+        QStringView{u"pwd"},
+        QStringView{u"kennwort"},
+    };
+
+    for (const QStringView hint : kPasswordHints)
+    {
+        if (text.contains(hint))
+            return true;
+    }
+
+    return false;
+}
+
+UiaPasswordObservation inspectPasswordHintMetadata(IUIAutomationElement* element)
+{
+    UiaPasswordObservation observation;
+    if (!element)
+        return observation;
+
+    CONTROLTYPEID controlType = 0;
+    if (FAILED(element->get_CurrentControlType(&controlType)))
+        controlType = 0;
+
+    const bool editableLike =
+        controlType == UIA_EditControlTypeId || controlType == UIA_CustomControlTypeId ||
+        controlType == UIA_PaneControlTypeId || controlType == UIA_DocumentControlTypeId;
+    if (!editableLike)
+        return observation;
+
+    struct StringPropertyProbe
+    {
+        PROPERTYID propertyId;
+        const char* label;
+    };
+
+    static const std::array<StringPropertyProbe, 6> kPropertyProbes = {{
+        {UIA_AutomationIdPropertyId, "AutomationId"},
+        {UIA_NamePropertyId, "Name"},
+        {UIA_HelpTextPropertyId, "HelpText"},
+        {UIA_ItemTypePropertyId, "ItemType"},
+        {UIA_AriaRolePropertyId, "AriaRole"},
+        {UIA_AriaPropertiesPropertyId, "AriaProperties"},
+    }};
+
+    for (const StringPropertyProbe& probe : kPropertyProbes)
+    {
+        const QString value = currentStringProperty(element, probe.propertyId);
+        if (!containsPasswordHint(value))
+            continue;
+
+        observation.observed = true;
+        observation.isPassword = true;
+        observation.source = QString::fromLatin1(probe.label);
+        observation.matchedText = value;
+        return observation;
+    }
+
+    return observation;
+}
+
+const char* controlTypeToString(CONTROLTYPEID controlType)
+{
+    switch (controlType)
+    {
+        case UIA_ButtonControlTypeId:
+            return "Button";
+        case UIA_CustomControlTypeId:
+            return "Custom";
+        case UIA_DocumentControlTypeId:
+            return "Document";
+        case UIA_EditControlTypeId:
+            return "Edit";
+        case UIA_GroupControlTypeId:
+            return "Group";
+        case UIA_HyperlinkControlTypeId:
+            return "Hyperlink";
+        case UIA_ImageControlTypeId:
+            return "Image";
+        case UIA_ListControlTypeId:
+            return "List";
+        case UIA_ListItemControlTypeId:
+            return "ListItem";
+        case UIA_MenuControlTypeId:
+            return "Menu";
+        case UIA_MenuBarControlTypeId:
+            return "MenuBar";
+        case UIA_MenuItemControlTypeId:
+            return "MenuItem";
+        case UIA_PaneControlTypeId:
+            return "Pane";
+        case UIA_RadioButtonControlTypeId:
+            return "RadioButton";
+        case UIA_ScrollBarControlTypeId:
+            return "ScrollBar";
+        case UIA_SliderControlTypeId:
+            return "Slider";
+        case UIA_SpinnerControlTypeId:
+            return "Spinner";
+        case UIA_StatusBarControlTypeId:
+            return "StatusBar";
+        case UIA_TabControlTypeId:
+            return "Tab";
+        case UIA_TabItemControlTypeId:
+            return "TabItem";
+        case UIA_TextControlTypeId:
+            return "Text";
+        case UIA_TitleBarControlTypeId:
+            return "TitleBar";
+        case UIA_ToolBarControlTypeId:
+            return "ToolBar";
+        case UIA_ToolTipControlTypeId:
+            return "ToolTip";
+        case UIA_WindowControlTypeId:
+            return "Window";
+        default:
+            return "Unknown";
+    }
+}
+
+bool rectContainsPoint(const RECT& rect, LONG x, LONG y)
+{
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+}
+
+bool tryGetCurrentBoundingRect(IUIAutomationElement* element, RECT* rect)
+{
+    if (!element || !rect)
+        return false;
+
+    RECT current{};
+    if (FAILED(element->get_CurrentBoundingRectangle(&current)))
+        return false;
+    if (current.left >= current.right || current.top >= current.bottom)
+        return false;
+
+    *rect = current;
+    return true;
+}
+
+UiaPasswordObservation inspectElementPasswordState(IUIAutomationElement* element)
+{
+    UiaPasswordObservation observation;
+    if (!element)
+        return observation;
+
+    VARIANT val;
+    VariantInit(&val);
+    HRESULT hr = element->GetCurrentPropertyValue(UIA_IsPasswordPropertyId, &val);
+    if (SUCCEEDED(hr) && val.vt == VT_BOOL)
+    {
+        observation.observed = true;
+        observation.isPassword = (val.boolVal == VARIANT_TRUE);
+        observation.source = QStringLiteral("IsPassword");
+    }
+    VariantClear(&val);
+
+    if (observation.isPassword)
+        return observation;
+
+    IUnknown* patternUnknown = nullptr;
+    hr = element->GetCurrentPattern(UIA_LegacyIAccessiblePatternId, &patternUnknown);
+    if (SUCCEEDED(hr) && patternUnknown)
+    {
+        auto* legacyPattern = static_cast<IUIAutomationLegacyIAccessiblePattern*>(nullptr);
+        hr = patternUnknown->QueryInterface(IID_PPV_ARGS(&legacyPattern));
+        patternUnknown->Release();
+        if (SUCCEEDED(hr) && legacyPattern)
+        {
+            DWORD legacyState = 0;
+            if (SUCCEEDED(legacyPattern->get_CurrentState(&legacyState)))
+            {
+                observation.observed = true;
+                if (legacyState & STATE_SYSTEM_PROTECTED)
+                {
+                    observation.isPassword = true;
+                    observation.source = QStringLiteral("LegacyState");
+                }
+            }
+            legacyPattern->Release();
+        }
+    }
+
+    if (observation.isPassword)
+        return observation;
+
+    UiaPasswordObservation metadataObservation = inspectPasswordHintMetadata(element);
+    if (metadataObservation.isPassword)
+        return metadataObservation;
+
+    return observation;
+}
+
+QString describeAutomationElement(IUIAutomationElement* element)
+{
+    if (!element)
+        return QStringLiteral("<null>");
+
+    CONTROLTYPEID controlType = 0;
+    element->get_CurrentControlType(&controlType);
+
+    BSTR frameworkId = nullptr;
+    BSTR className = nullptr;
+    BSTR name = nullptr;
+    BSTR automationId = nullptr;
+    BSTR localizedControlType = nullptr;
+    element->get_CurrentFrameworkId(&frameworkId);
+    element->get_CurrentClassName(&className);
+    element->get_CurrentName(&name);
+    element->get_CurrentAutomationId(&automationId);
+    element->get_CurrentLocalizedControlType(&localizedControlType);
+
+    RECT rect{};
+    QString rectText = QStringLiteral("<none>");
+    if (tryGetCurrentBoundingRect(element, &rect))
+    {
+        rectText = QStringLiteral("[%1,%2 %3x%4]")
+                       .arg(rect.left)
+                       .arg(rect.top)
+                       .arg(rect.right - rect.left)
+                       .arg(rect.bottom - rect.top);
+    }
+
+    return QStringLiteral("%1(%2) framework=\"%3\" class=\"%4\" name=\"%5\" id=\"%6\" rect=%7")
+        .arg(QString::fromLatin1(controlTypeToString(controlType)))
+        .arg(takeBstr(localizedControlType))
+        .arg(takeBstr(frameworkId))
+        .arg(takeBstr(className))
+        .arg(takeBstr(name))
+        .arg(takeBstr(automationId))
+        .arg(rectText);
+}
+
+bool searchDescendantsForPassword(IUIAutomationTreeWalker* walker,
+                                  IUIAutomationElement* root,
+                                  LONG x,
+                                  LONG y,
+                                  int depth,
+                                  int& nodesRemaining,
+                                  bool& observedAny)
+{
+    if (!walker || !root || depth >= kMaxUiaDescendantDepth || nodesRemaining <= 0)
+        return false;
+
+    IUIAutomationElement* child = nullptr;
+    HRESULT hr = walker->GetFirstChildElement(root, &child);
+    if (FAILED(hr) || !child)
+        return false;
+
+    while (child && nodesRemaining > 0)
+    {
+        IUIAutomationElement* next = nullptr;
+        walker->GetNextSiblingElement(child, &next);
+
+        bool shouldInspect = true;
+        RECT rect{};
+        if (tryGetCurrentBoundingRect(child, &rect))
+            shouldInspect = rectContainsPoint(rect, x, y);
+
+        if (shouldInspect)
+        {
+            --nodesRemaining;
+            UiaPasswordObservation observation = inspectElementPasswordState(child);
+            observedAny = observedAny || observation.observed;
+            if (observation.isPassword)
+            {
+                qCDebug(logFill) << "probeIsPassword: descendant matched via"
+                                 << (observation.source.isEmpty() ? QStringLiteral("<unknown>")
+                                                                  : observation.source)
+                                 << (observation.matchedText.isEmpty() ? QStringLiteral("")
+                                                                       : observation.matchedText)
+                                 << describeAutomationElement(child);
+                child->Release();
+                if (next)
+                    next->Release();
+                return true;
+            }
+
+            if (searchDescendantsForPassword(
+                    walker, child, x, y, depth + 1, nodesRemaining, observedAny))
+            {
+                child->Release();
+                if (next)
+                    next->Release();
+                return true;
+            }
+        }
+
+        child->Release();
+        child = next;
+    }
+
+    return false;
+}
+
+}  // namespace
 
 // Only one controller can own the global hooks at a time.
 // Windows global low-level hooks are per-thread and cannot be multiplexed;
@@ -555,6 +908,50 @@ int FillController::probeIsPassword(LONG x, LONG y)
             return 1;
         }
         VariantClear(&state);
+
+        // Phase 1b: heuristic check on MSAA accessible-name and -description.
+        // Some sites use type="text" with JS-driven masking instead of
+        // type="password", so STATE_SYSTEM_PROTECTED is never set. The HTML
+        // placeholder, label, and aria-describedby text are still exposed
+        // through accName / accDescription and often contain recognizable
+        // password keywords (e.g. placeholder="Passwort").
+        VARIANT role;
+        VariantInit(&role);
+        hr = pAcc->get_accRole(varChild, &role);
+        const bool editableRole =
+            SUCCEEDED(hr) && role.vt == VT_I4 &&
+            (role.lVal == ROLE_SYSTEM_TEXT || role.lVal == ROLE_SYSTEM_COMBOBOX);
+        VariantClear(&role);
+
+        if (editableRole)
+        {
+            BSTR bstrName = nullptr;
+            if (SUCCEEDED(pAcc->get_accName(varChild, &bstrName)))
+            {
+                const QString nameStr = takeBstr(bstrName);
+                if (containsPasswordHint(nameStr))
+                {
+                    qCDebug(logFill) << "probeIsPassword: MSAA accName matched:" << nameStr;
+                    pAcc->Release();
+                    VariantClear(&varChild);
+                    return 1;
+                }
+            }
+
+            BSTR bstrDesc = nullptr;
+            if (SUCCEEDED(pAcc->get_accDescription(varChild, &bstrDesc)))
+            {
+                const QString descStr = takeBstr(bstrDesc);
+                if (containsPasswordHint(descStr))
+                {
+                    qCDebug(logFill) << "probeIsPassword: MSAA accDescription matched:" << descStr;
+                    pAcc->Release();
+                    VariantClear(&varChild);
+                    return 1;
+                }
+            }
+        }
+
         pAcc->Release();
     }
     VariantClear(&varChild);
@@ -573,22 +970,85 @@ int FillController::probeIsPassword(LONG x, LONG y)
         return -1;
     }
 
-    VARIANT val;
-    VariantInit(&val);
-    hr = element->GetCurrentPropertyValue(UIA_IsPasswordPropertyId, &val);
-    element->Release();
+    qCDebug(logFill) << "probeIsPassword: UIA hit element =" << describeAutomationElement(element);
 
-    if (FAILED(hr))
+    bool observedAny = false;
+    UiaPasswordObservation hitObservation = inspectElementPasswordState(element);
+    observedAny = hitObservation.observed;
+    if (hitObservation.isPassword)
     {
-        qCDebug(logFill) << "probeIsPassword: GetCurrentPropertyValue failed: 0x" << Qt::hex << hr;
-        VariantClear(&val);
-        return -1;
+        qCDebug(logFill) << "probeIsPassword: UIA hit element matched via"
+                         << (hitObservation.source.isEmpty() ? QStringLiteral("<unknown>")
+                                                             : hitObservation.source)
+                         << (hitObservation.matchedText.isEmpty() ? QStringLiteral("")
+                                                                  : hitObservation.matchedText);
+        element->Release();
+        return 1;
     }
 
-    bool isPassword = (val.vt == VT_BOOL && val.boolVal == VARIANT_TRUE);
-    VariantClear(&val);
-    qCDebug(logFill) << "probeIsPassword: UIA IsPassword=" << isPassword;
-    return isPassword ? 1 : 0;
+    IUIAutomationTreeWalker* rawWalker = nullptr;
+    hr = m_UIA->get_RawViewWalker(&rawWalker);
+    if (FAILED(hr) || !rawWalker)
+    {
+        qCDebug(logFill) << "probeIsPassword: get_RawViewWalker failed: 0x" << Qt::hex << hr;
+        element->Release();
+        return observedAny ? 0 : -1;
+    }
+
+    // Browser hits often land on placeholder text or a renderer wrapper
+    // instead of the password edit itself. Walk both directions around the
+    // hit node so an empty password field still resolves correctly.
+    IUIAutomationElement* current = element;
+    current->AddRef();
+    for (int depth = 0; depth < kMaxUiaAncestorDepth; ++depth)
+    {
+        IUIAutomationElement* parent = nullptr;
+        hr = rawWalker->GetParentElement(current, &parent);
+        current->Release();
+        current = nullptr;
+
+        if (FAILED(hr) || !parent)
+            break;
+
+        RECT rect{};
+        if (tryGetCurrentBoundingRect(parent, &rect) && !rectContainsPoint(rect, x, y))
+        {
+            current = parent;
+            continue;
+        }
+
+        UiaPasswordObservation observation = inspectElementPasswordState(parent);
+        observedAny = observedAny || observation.observed;
+        if (observation.isPassword)
+        {
+            qCDebug(logFill) << "probeIsPassword: ancestor matched at depth" << (depth + 1) << "via"
+                             << (observation.source.isEmpty() ? QStringLiteral("<unknown>")
+                                                              : observation.source)
+                             << (observation.matchedText.isEmpty() ? QStringLiteral("")
+                                                                   : observation.matchedText)
+                             << describeAutomationElement(parent);
+            parent->Release();
+            rawWalker->Release();
+            element->Release();
+            return 1;
+        }
+
+        current = parent;
+    }
+    if (current)
+        current->Release();
+
+    int nodesRemaining = kMaxUiaDescendantNodes;
+    const bool descendantMatched =
+        searchDescendantsForPassword(rawWalker, element, x, y, 0, nodesRemaining, observedAny);
+    rawWalker->Release();
+    element->Release();
+
+    if (descendantMatched)
+        return 1;
+
+    qCDebug(logFill) << "probeIsPassword: UIA IsPassword=false on inspected path";
+    return observedAny ? 0 : -1;
 }
 
 }  // namespace seal
