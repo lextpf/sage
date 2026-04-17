@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import QtQuick.Layouts
 
 // Master password entry dialog.
@@ -59,39 +60,63 @@ Popup {
     }
 
     background: Rectangle {
+        id: dialogBg
         color: Theme.bgDialog
         radius: Theme.radiusLarge
         border.width: 1
         border.color: Theme.borderMedium
-        clip: true
 
-        Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 54
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.18) }
-                GradientStop { position: 1.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.0) }
+        // Decorative overlays are masked to the dialog's rounded silhouette so
+        // the top gradient, edge light, and tone blob don't bleed into the
+        // invisible corner regions of the rounded rectangle.
+        Item {
+            anchors.fill: parent
+            layer.enabled: true
+            layer.smooth: true
+            layer.effect: MultiEffect {
+                maskEnabled: true
+                maskSource: dialogShellMask
+                autoPaddingEnabled: false
+            }
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 54
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.04) }
+                    GradientStop { position: 1.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.0) }
+                }
+            }
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                color: Theme.dialogEdgeLight
+                opacity: 0.20
+            }
+
+            Rectangle {
+                width: 170
+                height: 124
+                radius: 85
+                x: -26
+                y: -54
+                color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.025)
             }
         }
 
         Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            color: Theme.dialogEdgeLight
-            opacity: 0.9
-        }
-
-        Rectangle {
-            width: 170
-            height: 124
-            radius: 85
-            x: -26
-            y: -54
-            color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.10)
+            id: dialogShellMask
+            anchors.fill: parent
+            radius: parent.radius
+            visible: false
+            layer.enabled: true
+            layer.smooth: true
+            antialiasing: true
         }
     }
 
@@ -121,11 +146,11 @@ Popup {
                 height: Theme.px(30)
                 radius: width / 2
                 gradient: Gradient {
-                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.20) }
-                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.08) }
+                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.12) }
+                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.03) }
                 }
                 border.width: 1
-                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.26)
+                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.14)
 
                 SvgIcon {
                     source: Theme.iconLock
@@ -303,7 +328,7 @@ Popup {
 
                     RippleEffect {
                         id: qrRipple
-                        baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35)
+                        baseColor: Qt.rgba(Theme.textPrimary.r, Theme.textPrimary.g, Theme.textPrimary.b, 0.30)
                         cornerRadius: parent.radius
                     }
                 }
@@ -352,7 +377,7 @@ Popup {
 
                     RippleEffect {
                         id: pwOkRipple
-                        baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                        baseColor: Qt.rgba(Theme.textOnAccent.r, Theme.textOnAccent.g, Theme.textOnAccent.b, 0.30)
                         cornerRadius: parent.radius
                     }
                 }

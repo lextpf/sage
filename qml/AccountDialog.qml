@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import QtQuick.Layouts
 
 // Add / edit account dialog. Dual-mode: editIndex == -1 means "add a new
@@ -54,39 +55,63 @@ Popup {
     }
 
     background: Rectangle {
+        id: dialogBg
         color: Theme.bgDialog
         radius: Theme.radiusLarge
         border.width: 1
         border.color: Theme.borderMedium
-        clip: true
 
-        Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 54
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.18) }
-                GradientStop { position: 1.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.0) }
+        // Decorative overlays are masked to the dialog's rounded silhouette so
+        // the top gradient, edge light, and tone blob don't bleed into the
+        // invisible corner regions of the rounded rectangle.
+        Item {
+            anchors.fill: parent
+            layer.enabled: true
+            layer.smooth: true
+            layer.effect: MultiEffect {
+                maskEnabled: true
+                maskSource: dialogShellMask
+                autoPaddingEnabled: false
+            }
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 54
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.04) }
+                    GradientStop { position: 1.0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.0) }
+                }
+            }
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                color: Theme.dialogEdgeLight
+                opacity: 0.20
+            }
+
+            Rectangle {
+                width: 180
+                height: 128
+                radius: 90
+                x: -30
+                y: -52
+                color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.025)
             }
         }
 
         Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            color: Theme.dialogEdgeLight
-            opacity: 0.9
-        }
-
-        Rectangle {
-            width: 180
-            height: 128
-            radius: 90
-            x: -30
-            y: -52
-            color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.10)
+            id: dialogShellMask
+            anchors.fill: parent
+            radius: parent.radius
+            visible: false
+            layer.enabled: true
+            layer.smooth: true
+            antialiasing: true
         }
     }
 
@@ -112,11 +137,11 @@ Popup {
                 height: Theme.px(30)
                 radius: width / 2
                 gradient: Gradient {
-                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.20) }
-                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.08) }
+                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.12) }
+                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.03) }
                 }
                 border.width: 1
-                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.26)
+                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.14)
 
                 SvgIcon {
                     source: root.shellIcon
@@ -367,7 +392,7 @@ Popup {
 
                     RippleEffect {
                         id: acctCancelRipple
-                        baseColor: Qt.rgba(Theme.ghostBtnHoverTop.r, Theme.ghostBtnHoverTop.g, Theme.ghostBtnHoverTop.b, 0.35)
+                        baseColor: Qt.rgba(Theme.textPrimary.r, Theme.textPrimary.g, Theme.textPrimary.b, 0.30)
                         cornerRadius: parent.radius
                     }
                 }
@@ -377,6 +402,9 @@ Popup {
             Button {
                 id: okButton
                 text: "OK"
+                enabled: serviceField.text.trim().length > 0
+                      && usernameField.text.trim().length > 0
+                      && passwordField.text.length > 0
                 onClicked: root.submitForm()
 
                 HoverHandler { id: acctOkHover; cursorShape: Qt.PointingHandCursor }
@@ -389,7 +417,7 @@ Popup {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.DemiBold
-                    color: Theme.textOnAccent
+                    color: okButton.enabled ? Theme.textOnAccent : Theme.textDisabled
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
@@ -399,16 +427,16 @@ Popup {
                     radius: Theme.radiusMedium
                     clip: true
                     gradient: Gradient {
-                        GradientStop { position: 0; color: okButton.pressed ? Theme.btnPressTop : okButton.hovered ? Theme.btnHoverTop : Theme.btnGradTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
-                        GradientStop { position: 1; color: okButton.pressed ? Theme.btnPressBot : okButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                        GradientStop { position: 0; color: okButton.enabled ? (okButton.pressed ? Theme.btnPressTop : okButton.hovered ? Theme.btnHoverTop : Theme.btnGradTop) : Theme.btnDisabledTop; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
+                        GradientStop { position: 1; color: okButton.enabled ? (okButton.pressed ? Theme.btnPressBot : okButton.hovered ? Theme.btnHoverBot : Theme.btnGradBot) : Theme.btnDisabledBot; Behavior on color { ColorAnimation { duration: Theme.hoverDuration } } }
                     }
                     border.width: 1
-                    border.color: okButton.hovered ? Theme.borderBright : Theme.borderBtn
+                    border.color: !okButton.enabled ? Theme.borderSubtle : okButton.hovered ? Theme.borderBright : Theme.borderBtn
                     Behavior on border.color { ColorAnimation { duration: Theme.hoverDuration } }
 
                     RippleEffect {
                         id: acctOkRipple
-                        baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                        baseColor: Qt.rgba(Theme.textOnAccent.r, Theme.textOnAccent.g, Theme.textOnAccent.b, 0.30)
                         cornerRadius: parent.radius
                     }
                 }

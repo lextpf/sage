@@ -496,11 +496,11 @@ ApplicationWindow {
                     height: Theme.px(28)
                     radius: width / 2
                     gradient: Gradient {
-                        GradientStop { position: 0; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.20) }
-                        GradientStop { position: 1; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.08) }
+                        GradientStop { position: 0; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.12) }
+                        GradientStop { position: 1; color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.03) }
                     }
                     border.width: 1
-                    border.color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.26)
+                    border.color: Qt.rgba(Theme.textError.r, Theme.textError.g, Theme.textError.b, 0.14)
 
                     SvgIcon {
                         source: Theme.iconTriangleExclamation
@@ -576,7 +576,7 @@ ApplicationWindow {
 
                         RippleEffect {
                             id: errorOkRipple
-                            baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                            baseColor: Qt.rgba(Theme.textOnAccent.r, Theme.textOnAccent.g, Theme.textOnAccent.b, 0.30)
                             cornerRadius: parent.radius
                         }
                     }
@@ -607,11 +607,11 @@ ApplicationWindow {
                     height: Theme.px(28)
                     radius: width / 2
                     gradient: Gradient {
-                        GradientStop { position: 0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.20) }
-                        GradientStop { position: 1; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08) }
+                        GradientStop { position: 0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12) }
+                        GradientStop { position: 1; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.03) }
                     }
                     border.width: 1
-                    border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.26)
+                    border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.14)
 
                     SvgIcon {
                         source: Theme.iconCircleCheck
@@ -687,7 +687,7 @@ ApplicationWindow {
 
                         RippleEffect {
                             id: infoOkRipple
-                            baseColor: Qt.rgba(Theme.btnGradTop.r, Theme.btnGradTop.g, Theme.btnGradTop.b, 0.35)
+                            baseColor: Qt.rgba(Theme.textOnAccent.r, Theme.textOnAccent.g, Theme.textOnAccent.b, 0.30)
                             cornerRadius: parent.radius
                         }
                     }
