@@ -74,6 +74,8 @@ Popup {
                 autoPaddingEnabled: false
             }
 
+            DialogBlobs { }
+
             Rectangle {
                 anchors.top: parent.top
                 anchors.left: parent.left
@@ -100,7 +102,7 @@ Popup {
                 radius: 90
                 x: -30
                 y: -52
-                color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.025)
+                color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.05)
             }
         }
 
@@ -131,17 +133,10 @@ Popup {
             Layout.bottomMargin: 18
             spacing: 10
 
-            Rectangle {
+            Item {
                 Layout.alignment: Qt.AlignTop
-                width: Theme.px(30)
-                height: Theme.px(30)
-                radius: width / 2
-                gradient: Gradient {
-                    GradientStop { position: 0; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.12) }
-                    GradientStop { position: 1; color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.03) }
-                }
-                border.width: 1
-                border.color: Qt.rgba(root.shellTone.r, root.shellTone.g, root.shellTone.b, 0.14)
+                Layout.preferredWidth: Theme.px(30)
+                Layout.preferredHeight: Theme.px(30)
 
                 SvgIcon {
                     source: root.shellIcon
