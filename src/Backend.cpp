@@ -5,6 +5,7 @@
 #include "CliDispatch.h"
 #include "CliHandler.h"
 #include "Clipboard.h"
+#include "Diagnostics.h"
 #include "FileOperations.h"
 #include "FillController.h"
 #include "Logging.h"
@@ -28,6 +29,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -235,7 +238,11 @@ void Backend::submitPassword(QString password)
     // memory is dumped.
     m_DPAPIGuard = seal::DPAPIGuard<seal::basic_secure_string<wchar_t>>(&m_Password);
     m_PasswordSet = true;
-    qCInfo(logBackend) << "password set via manual entry";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=auth.password.set",
+                                "result=ok",
+                                "source=manual_entry",
+                                seal::diag::kv("pending_action", m_PendingAction != nullptr)}));
     setStatus("Password set");
     emit passwordSetChanged();
 
@@ -252,10 +259,17 @@ void Backend::submitPassword(QString password)
 
 void Backend::requestQrCapture()
 {
+    const std::string opId = seal::diag::nextOpId("qr_capture");
+    const auto started = std::chrono::steady_clock::now();
+
     // If a QR capture is already running, don't start another one.
     if (m_QrThread && m_QrThread->isRunning())
     {
-        qCWarning(logBackend) << "QR capture already in progress";
+        qCWarning(logBackend).noquote()
+            << QString::fromStdString(seal::diag::joinFields({"event=qr.capture.skip",
+                                                              "result=skip",
+                                                              seal::diag::kv("op", opId),
+                                                              "reason=already_in_progress"}));
         return;
     }
 
@@ -265,14 +279,15 @@ void Backend::requestQrCapture()
     // processes from taking the foreground.
     AllowSetForegroundWindow(ASFW_ANY);
 
-    qCInfo(logBackend) << "starting webcam QR capture (worker thread)";
+    qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=qr.capture.begin", "result=start", seal::diag::kv("op", opId), "worker=true"}));
 
     // Run the blocking OpenCV capture on a worker thread so the Qt event
     // loop stays responsive. captureQrFromWebcam() can block for up to
     // 60 seconds (capture timeout); doing that on the GUI thread would
     // freeze the entire UI.
     m_QrThread = QThread::create(
-        [this]()
+        [this, opId, started]()
         {
             seal::secure_string<> qrResult = seal::captureQrFromWebcam();
 
@@ -280,13 +295,18 @@ void Backend::requestQrCapture()
             // so all signal emissions happen on the correct thread.
             QMetaObject::invokeMethod(
                 this,
-                [this, result = std::move(qrResult)]() mutable
+                [this, opId, started, result = std::move(qrResult)]() mutable
                 {
-                    qCInfo(logBackend) << "webcam QR returned len=" << result.size();
-
                     if (result.empty())
                     {
-                        qCWarning(logBackend) << "password NOT set (QR capture failed or empty)";
+                        qCWarning(logBackend).noquote()
+                            << QString::fromStdString(seal::diag::joinFields(
+                                   {"event=qr.capture.finish",
+                                    "result=fail",
+                                    seal::diag::kv("op", opId),
+                                    "reason=empty_or_cancelled",
+                                    seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                                    seal::diag::kv("payload_len", 0)}));
                         setStatus("QR capture failed or cancelled");
                         emit qrCaptureFinished(false);
                         return;
@@ -297,8 +317,13 @@ void Backend::requestQrCapture()
                     QString captured = QString::fromUtf8(result.data(), (int)result.size());
                     // result auto-wipes on scope exit
 
-                    qCInfo(logBackend)
-                        << "QR captured" << captured.size() << "chars, awaiting confirmation";
+                    qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                        {"event=qr.capture.finish",
+                         "result=ok",
+                         seal::diag::kv("op", opId),
+                         seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                         seal::diag::kv("payload_len", captured.size()),
+                         "confirmation_required=true"}));
                     setStatus("QR captured - confirm password");
                     emit qrCaptureFinished(true);
 
@@ -350,18 +375,31 @@ void Backend::cancelFillIfArmed()
 
 void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
 {
+    const std::string opId = seal::diag::nextOpId("vault_load");
+    const auto started = std::chrono::steady_clock::now();
+    const std::string pathMeta = seal::diag::pathSummary(filePath.toUtf8().toStdString());
+
     // Cancel any active fill before replacing the records vector,
     // otherwise FillController's borrowed pointer to m_Records would dangle.
     cancelFillIfArmed();
-    qCInfo(logBackend) << "loadVaultFromPath:" << QFileInfo(filePath).fileName()
-                       << "autoLoad=" << isAutoLoad;
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.load.begin",
+                                "result=start",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("auto", isAutoLoad),
+                                pathMeta}));
     try
     {
         ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
         m_Records = seal::loadVaultIndex(filePath, m_Password);
         ++m_RecordsGeneration;
         m_CurrentVaultPath = filePath;
-        qCInfo(logBackend) << "vault loaded:" << m_Records.size() << "record(s)";
+        qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=vault.load.finish",
+             "result=ok",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("record_count", m_Records.size()),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
         refreshModel();
         if (isAutoLoad)
             setStatus(QString("Auto-loaded %1 account(s) from %2")
@@ -382,7 +420,12 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
             // 3. Stash a lambda that re-attempts this same load once the
             //    user enters a new password (the pending-action pattern).
             // 4. Signal QML to re-show the password dialog with an error hint.
-            qCWarning(logBackend) << "wrong password for vault";
+            qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                {"event=vault.load.finish",
+                 "result=retry",
+                 seal::diag::kv("op", opId),
+                 "reason=wrong_password",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
             m_DPAPIGuard = {};
             seal::Cryptography::cleanseString(m_Password);
             m_PasswordSet = false;
@@ -392,7 +435,13 @@ void Backend::loadVaultFromPath(const QString& filePath, bool isAutoLoad)
             emit passwordRetryRequired("Wrong password - try again.");
             return;
         }
-        qCWarning(logBackend) << "vault load error:" << e.what();
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=vault.load.finish",
+             "result=fail",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what())),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
         emit errorOccurred("Error", QString("Failed to load vault: %1").arg(e.what()));
         setStatus("Failed to load vault");
     }
@@ -440,8 +489,14 @@ void Backend::saveVault()
     if (!fileName.endsWith(".seal", Qt::CaseInsensitive))
         fileName += ".seal";
 
-    qCInfo(logBackend) << "saveVault:" << QFileInfo(fileName).fileName()
-                       << "records=" << m_Records.size();
+    const std::string opId = seal::diag::nextOpId("vault_save");
+    const auto started = std::chrono::steady_clock::now();
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.save.begin",
+                                "result=start",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("record_count", m_Records.size()),
+                                seal::diag::pathSummary(fileName.toUtf8().toStdString())}));
     ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     bool saveOk = seal::saveVaultV2(fileName, m_Records, m_Password);
     if (saveOk)
@@ -456,14 +511,24 @@ void Backend::saveVault()
         std::erase_if(m_Records, [](const seal::VaultRecord& r) { return r.deleted; });
 
         refreshModel();
-        qCInfo(logBackend) << "vault saved:" << m_Records.size() << "record(s)";
+        qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=vault.save.finish",
+             "result=ok",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("record_count", m_Records.size()),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
         setStatus(QString("Saved %1 account(s) to vault").arg(m_Records.size()));
         emit vaultLoadedChanged();
         emit vaultFileNameChanged();
     }
     else
     {
-        qCWarning(logBackend) << "vault save failed";
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=vault.save.finish",
+             "result=fail",
+             seal::diag::kv("op", opId),
+             "reason=save_failed",
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
         emit errorOccurred("Error", "Failed to save vault file");
         setStatus("Failed to save vault");
     }
@@ -474,7 +539,8 @@ void Backend::unloadVault()
     // Cancel any active fill before clearing records, otherwise
     // FillController's borrowed pointer to m_Records would dangle.
     cancelFillIfArmed();
-    qCInfo(logBackend) << "unloadVault: clearing" << m_Records.size() << "record(s)";
+    qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=vault.unload", "result=ok", seal::diag::kv("record_count", m_Records.size())}));
     m_Records.clear();
     ++m_RecordsGeneration;
     m_CurrentVaultPath.clear();
@@ -514,8 +580,12 @@ void Backend::addAccount(const QString& service, const QString& username, const 
             seal::Cryptography::cleanseString(*secUser, *secPass);
             m_Records.push_back(std::move(newRecord));
             ++m_RecordsGeneration;
-            qCInfo(logBackend) << "addAccount (deferred): service=" << service
-                               << "total=" << m_Records.size();
+            qCInfo(logBackend).noquote() << QString::fromStdString(
+                seal::diag::joinFields({"event=vault.record.add",
+                                        "result=ok",
+                                        "deferred=true",
+                                        seal::diag::kv("total_records", m_Records.size()),
+                                        seal::diag::kv("service_len", service.size())}));
             refreshModel();
             setStatus("Account added");
             emit vaultLoadedChanged();
@@ -539,7 +609,12 @@ void Backend::addAccount(const QString& service, const QString& username, const 
     cancelFillIfArmed();
     m_Records.push_back(std::move(newRecord));
     ++m_RecordsGeneration;
-    qCInfo(logBackend) << "addAccount: service=" << service << "total=" << m_Records.size();
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.record.add",
+                                "result=ok",
+                                "deferred=false",
+                                seal::diag::kv("total_records", m_Records.size()),
+                                seal::diag::kv("service_len", service.size())}));
     refreshModel();
     setStatus("Account added");
     emit vaultLoadedChanged();
@@ -588,7 +663,11 @@ void Backend::editAccount(int index,
 
     seal::Cryptography::cleanseString(secUsername, secPassword);
 
-    qCInfo(logBackend) << "editAccount: index=" << index << "service=" << service;
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.record.edit",
+                                "result=ok",
+                                seal::diag::kv("index", index),
+                                seal::diag::kv("service_len", service.size())}));
     refreshModel();
     setStatus("Account updated");
 }
@@ -604,7 +683,11 @@ void Backend::deleteAccount(int index)
     m_Records[index].deleted = true;
     m_Records[index].dirty = true;
     ++m_RecordsGeneration;
-    qCInfo(logBackend) << "deleteAccount: index=" << index << "(soft-delete)";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.record.delete",
+                                "result=ok",
+                                "mode=soft_delete",
+                                seal::diag::kv("index", index)}));
     refreshModel();
     setStatus("Account deleted");
 
@@ -628,7 +711,8 @@ void Backend::deleteAccount(int index)
 
 QVariantMap Backend::decryptAccountForEdit(int index)
 {
-    qCDebug(logBackend) << "decryptAccountForEdit: index=" << index;
+    qCDebug(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=credential.edit_decrypt.request", seal::diag::kv("index", index)}));
     QVariantMap result;
     if (index < 0 || index >= (int)m_Records.size())
         return result;
@@ -644,8 +728,11 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             {
                 if (index < 0 || index >= static_cast<int>(m_Records.size()))
                 {
-                    qCWarning(logBackend)
-                        << "decryptAccountForEdit (deferred): record no longer exists";
+                    qCWarning(logBackend).noquote() << QString::fromStdString(
+                        seal::diag::joinFields({"event=credential.edit_decrypt.finish",
+                                                "result=fail",
+                                                "deferred=true",
+                                                "reason=record_missing"}));
                     emit errorOccurred("Error", "Selected account no longer exists");
                     return;
                 }
@@ -669,8 +756,12 @@ QVariantMap Backend::decryptAccountForEdit(int index)
             }
             catch (const std::exception& e)
             {
-                qCWarning(logBackend)
-                    << "decryptAccountForEdit (deferred): decrypt failed:" << e.what();
+                qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                    {"event=credential.edit_decrypt.finish",
+                     "result=fail",
+                     "deferred=true",
+                     seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+                     seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what()))}));
                 emit errorOccurred("Error",
                                    QString("Failed to decrypt credential: %1").arg(e.what()));
             }
@@ -696,7 +787,12 @@ QVariantMap Backend::decryptAccountForEdit(int index)
     }
     catch (const std::exception& e)
     {
-        qCWarning(logBackend) << "decryptAccountForEdit: decrypt failed:" << e.what();
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=credential.edit_decrypt.finish",
+             "result=fail",
+             "deferred=false",
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what()))}));
         emit errorOccurred("Error", QString("Failed to decrypt credential: %1").arg(e.what()));
     }
     // Caller (Main.qml) copies username/password into dialog properties,
@@ -713,7 +809,7 @@ constexpr DWORD kTabKeySettleDelayMs = 100;  // Wait for Tab to advance focus
 // Types username + tab + password into the currently focused window.
 // Takes a snapshot of the record and password so the worker thread
 // never touches Backend's shared state.
-static void doTypeLogin(
+static bool doTypeLogin(
     const seal::VaultRecord& record,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw)
 {
@@ -724,13 +820,18 @@ static void doTypeLogin(
     }
     catch (const std::exception& e)
     {
-        qCWarning(logBackend) << "doTypeLogin: decrypt failed:" << e.what();
-        return;
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=fill.type.decrypt.fail",
+             "mode=login",
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what()))}));
+        return false;
     }
     catch (...)
     {
-        qCWarning(logBackend) << "doTypeLogin: decrypt failed (unknown error)";
-        return;
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=fill.type.decrypt.fail", "mode=login", "reason=unknown"}));
+        return false;
     }
 
     bool success1 = seal::typeSecret(cred.username.data(), (int)cred.username.size(), 0);
@@ -738,7 +839,7 @@ static void doTypeLogin(
     if (!success1)
     {
         cred.cleanse();
-        return;
+        return false;
     }
 
     // Brief pause so the target field registers the username keystrokes
@@ -757,14 +858,15 @@ static void doTypeLogin(
     SendInput(2, tabInput, sizeof(INPUT));
     Sleep(kTabKeySettleDelayMs);
 
-    (void)seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
+    const bool success2 = seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
+    return success2;
 }
 
 // Types only the password into the currently focused window.
 // Takes a snapshot of the record and password so the worker thread
 // never touches Backend's shared state.
-static void doTypePassword(
+static bool doTypePassword(
     const seal::VaultRecord& record,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPw)
 {
@@ -775,17 +877,23 @@ static void doTypePassword(
     }
     catch (const std::exception& e)
     {
-        qCWarning(logBackend) << "doTypePassword: decrypt failed:" << e.what();
-        return;
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=fill.type.decrypt.fail",
+             "mode=password",
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what()))}));
+        return false;
     }
     catch (...)
     {
-        qCWarning(logBackend) << "doTypePassword: decrypt failed (unknown error)";
-        return;
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=fill.type.decrypt.fail", "mode=password", "reason=unknown"}));
+        return false;
     }
 
-    (void)seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
+    const bool success = seal::typeSecret(cred.password.data(), (int)cred.password.size(), 0);
     cred.cleanse();
+    return success;
 }
 
 void Backend::typeLogin(int index)
@@ -828,6 +936,18 @@ void Backend::scheduleTypingAction(int index, TypingMode mode, const QString& la
     m_Busy = true;
     emit busyChanged();
 
+    const std::string opId =
+        seal::diag::nextOpId(mode == TypingMode::Login ? "fill_type_login" : "fill_type_password");
+    const auto started = std::chrono::steady_clock::now();
+    const char* modeToken = mode == TypingMode::Login ? "login" : "password";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=fill.type.begin",
+                                "result=start",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("mode", modeToken),
+                                seal::diag::kv("index", index),
+                                "countdown_s=3"}));
+
     // 3-second countdown gives the user time to focus the target field
     // in the external application before keystrokes start arriving.
     int remaining = 3;
@@ -837,82 +957,121 @@ void Backend::scheduleTypingAction(int index, TypingMode mode, const QString& la
     auto* timer = new QTimer(this);
     timer->setInterval(1000);
 
-    connect(timer,
-            &QTimer::timeout,
-            this,
-            [this, timer, index, mode, label, remaining]() mutable
+    connect(
+        timer,
+        &QTimer::timeout,
+        this,
+        [this, timer, index, mode, label, remaining, opId, started, modeToken]() mutable
+        {
+            remaining--;
+            if (remaining > 0)
             {
-                remaining--;
-                if (remaining > 0)
+                m_CountdownText = QString("Typing in %1...").arg(remaining);
+                emit countdownTextChanged();
+            }
+            else
+            {
+                timer->stop();
+                timer->deleteLater();
+
+                if (index < 0 || index >= (int)m_Records.size())
                 {
-                    m_CountdownText = QString("Typing in %1...").arg(remaining);
+                    qCWarning(logBackend).noquote()
+                        << QString::fromStdString(seal::diag::joinFields(
+                               {"event=fill.type.finish",
+                                "result=fail",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("mode", modeToken),
+                                "reason=record_missing",
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
+                    m_CountdownText.clear();
                     emit countdownTextChanged();
+                    m_Busy = false;
+                    emit busyChanged();
+                    return;
                 }
-                else
+
+                m_CountdownText = "Typing...";
+                emit countdownTextChanged();
+
+                QString service = QString::fromUtf8(m_Records[index].platform.c_str());
+
+                // Run the blocking typing sequence on a worker thread so
+                // the GUI event loop stays responsive during Sleep() calls
+                // between username, Tab, and password keystrokes.
+                //
+                // Snapshot the record and password into the worker's captures
+                // so the thread never touches m_Records or m_Password directly.
+                // The GUI thread could process events that mutate those members
+                // while the worker is running.
+                m_DPAPIGuard.unprotect();
+                try
                 {
-                    timer->stop();
-                    timer->deleteLater();
+                    auto record = m_Records[index];
+                    seal::basic_secure_string<wchar_t> pw;
+                    pw.s.assign(m_Password.s.begin(), m_Password.s.end());
+                    auto success = std::make_shared<std::atomic<bool>>(false);
 
-                    if (index < 0 || index >= (int)m_Records.size())
-                    {
-                        m_CountdownText.clear();
-                        emit countdownTextChanged();
-                        m_Busy = false;
-                        emit busyChanged();
-                        return;
-                    }
-
-                    m_CountdownText = "Typing...";
-                    emit countdownTextChanged();
-
-                    QString service = QString::fromUtf8(m_Records[index].platform.c_str());
-
-                    // Run the blocking typing sequence on a worker thread so
-                    // the GUI event loop stays responsive during Sleep() calls
-                    // between username, Tab, and password keystrokes.
-                    //
-                    // Snapshot the record and password into the worker's captures
-                    // so the thread never touches m_Records or m_Password directly.
-                    // The GUI thread could process events that mutate those members
-                    // while the worker is running.
-                    m_DPAPIGuard.unprotect();
-                    try
-                    {
-                        auto record = m_Records[index];
-                        seal::basic_secure_string<wchar_t> pw;
-                        pw.s.assign(m_Password.s.begin(), m_Password.s.end());
-
-                        auto* worker = QThread::create(
-                            [record = std::move(record), pw = std::move(pw), mode]() mutable
+                    auto* worker = QThread::create(
+                        [record = std::move(record), pw = std::move(pw), mode, success]() mutable
+                        {
+                            bool ok = false;
+                            if (mode == Backend::TypingMode::Login)
+                                ok = doTypeLogin(record, pw);
+                            else
+                                ok = doTypePassword(record, pw);
+                            success->store(ok, std::memory_order_release);
+                            seal::Cryptography::cleanseString(pw);
+                        });
+                    connect(worker,
+                            &QThread::finished,
+                            this,
+                            [this, worker, label, service, opId, started, modeToken, success]()
                             {
-                                if (mode == Backend::TypingMode::Login)
-                                    doTypeLogin(record, pw);
-                                else
-                                    doTypePassword(record, pw);
-                                seal::Cryptography::cleanseString(pw);
-                            });
-                        connect(worker,
-                                &QThread::finished,
-                                this,
-                                [this, worker, label, service]()
+                                worker->deleteLater();
+                                m_DPAPIGuard.reprotect();
+                                m_CountdownText.clear();
+                                emit countdownTextChanged();
+                                m_Busy = false;
+                                emit busyChanged();
+                                const bool ok = success->load(std::memory_order_acquire);
+                                if (ok)
                                 {
-                                    worker->deleteLater();
-                                    m_DPAPIGuard.reprotect();
-                                    m_CountdownText.clear();
-                                    emit countdownTextChanged();
-                                    m_Busy = false;
-                                    emit busyChanged();
-                                    setStatus(QString("%1 typed for '%2'").arg(label, service));
-                                });
-                        worker->start();
-                    }
-                    catch (...)
-                    {
-                        m_DPAPIGuard.reprotect();
-                        throw;
-                    }
+                                    qCInfo(logBackend).noquote()
+                                        << QString::fromStdString(seal::diag::joinFields(
+                                               {"event=fill.type.finish",
+                                                "result=ok",
+                                                seal::diag::kv("op", opId),
+                                                seal::diag::kv("mode", modeToken),
+                                                seal::diag::kv("service_len", service.size()),
+                                                seal::diag::kv("duration_ms",
+                                                               seal::diag::elapsedMs(started))}));
+                                }
+                                else
+                                {
+                                    qCWarning(logBackend).noquote()
+                                        << QString::fromStdString(seal::diag::joinFields(
+                                               {"event=fill.type.finish",
+                                                "result=fail",
+                                                seal::diag::kv("op", opId),
+                                                seal::diag::kv("mode", modeToken),
+                                                "reason=type_sequence_failed",
+                                                seal::diag::kv("duration_ms",
+                                                               seal::diag::elapsedMs(started))}));
+                                    setStatus(QString("%1 typing failed").arg(label));
+                                    return;
+                                }
+                                setStatus(QString("%1 typed for '%2'").arg(label, service));
+                            });
+                    worker->start();
                 }
-            });
+                catch (...)
+                {
+                    m_DPAPIGuard.reprotect();
+                    throw;
+                }
+            }
+        });
 
     timer->start();
 }
@@ -930,9 +1089,17 @@ void Backend::encryptDirectory()
     if (dirPath.isEmpty())
         return;
 
+    const std::string opId = seal::diag::nextOpId("dir_encrypt");
+    const auto started = std::chrono::steady_clock::now();
     ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     int count = seal::encryptDirectory(dirPath, m_Password);
-    qCInfo(logBackend) << "encryptDirectory: encrypted" << count << "file(s)";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.encrypt.finish",
+                                "result=ok",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("count", count),
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                                seal::diag::pathSummary(dirPath.toUtf8().toStdString())}));
     setStatus(QString("Encrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Encrypted %1 file(s) in directory").arg(count));
 }
@@ -950,9 +1117,17 @@ void Backend::decryptDirectory()
     if (dirPath.isEmpty())
         return;
 
+    const std::string opId = seal::diag::nextOpId("dir_decrypt");
+    const auto started = std::chrono::steady_clock::now();
     ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
     int count = seal::decryptDirectory(dirPath, m_Password);
-    qCInfo(logBackend) << "decryptDirectory: decrypted" << count << "file(s)";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.decrypt.finish",
+                                "result=ok",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("count", count),
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                                seal::diag::pathSummary(dirPath.toUtf8().toStdString())}));
     setStatus(QString("Decrypted %1 file(s)").arg(count));
     emit infoMessage("Success", QString("Decrypted %1 file(s) in directory").arg(count));
 }
@@ -983,11 +1158,18 @@ void Backend::autoLoadVault()
 
     if (foundVaultPath.isEmpty())
     {
-        qCInfo(logBackend) << "autoLoadVault: no vault found";
+        qCInfo(logBackend).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=vault.autoload.scan",
+                                    "result=none",
+                                    seal::diag::kv("search_roots", searchPaths.size())}));
         return;
     }
 
-    qCInfo(logBackend) << "autoLoadVault: found" << QFileInfo(foundVaultPath).fileName();
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.autoload.scan",
+                                "result=found",
+                                seal::diag::kv("search_roots", searchPaths.size()),
+                                seal::diag::pathSummary(foundVaultPath.toUtf8().toStdString())}));
     if (!m_PasswordSet)
     {
         // Capture the discovered path so the deferred action can load it
@@ -1013,7 +1195,8 @@ void Backend::armFill(int index)
     if (m_Busy)
         return;
 
-    qCInfo(logBackend) << "armFill: index=" << index;
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=fill.arm.begin", seal::diag::kv("index", index)}));
     m_DPAPIGuard.unprotect();
     bool armed = false;
     try
@@ -1030,8 +1213,18 @@ void Backend::armFill(int index)
         // If hook install failed, don't apply "armed" UI state/minimize behavior.
         // fillError may already have reprotected, but this is harmless if unchanged.
         m_DPAPIGuard.reprotect();
+        qCWarning(logBackend).noquote()
+            << QString::fromStdString(seal::diag::joinFields({"event=fill.arm.finish",
+                                                              "result=fail",
+                                                              seal::diag::kv("index", index),
+                                                              "reason=controller_rejected"}));
         return;
     }
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=fill.arm.finish",
+                                "result=ok",
+                                seal::diag::kv("index", index),
+                                seal::diag::kv("generation", m_RecordsGeneration)}));
     setStatus("Fill armed - Ctrl+Click target field");
 
     // Safety net: reprotect the DPAPI guard after a generous window even if
@@ -1063,24 +1256,29 @@ void Backend::armFill(int index)
 
 void Backend::cancelFill()
 {
-    qCInfo(logBackend) << "cancelFill";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=fill.cancel.request"}));
     m_FillController->cancel();
 }
 
 void Backend::cleanup()
 {
-    qCInfo(logBackend) << "cleanup: starting";
+    const auto started = std::chrono::steady_clock::now();
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=app.cleanup.begin", "result=start"}));
 
     // Wait for any active QR capture thread to finish before destroying
     // members it may reference. Without this, the thread could call
     // QMetaObject::invokeMethod(this, ...) on a dangling pointer.
     if (m_QrThread && m_QrThread->isRunning())
     {
-        qCInfo(logBackend) << "cleanup: waiting for QR capture thread";
+        qCInfo(logBackend).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=app.cleanup.qr_thread.wait", "result=start"}));
         m_QrThread->requestInterruption();
         if (!m_QrThread->wait(5000))
         {
-            qCWarning(logBackend) << "cleanup: QR thread did not finish in 5s, terminating";
+            qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                {"event=app.cleanup.qr_thread.wait", "result=fail", "reason=timeout_terminate"}));
             m_QrThread->terminate();
             m_QrThread->wait();
         }
@@ -1096,12 +1294,20 @@ void Backend::cleanup()
         {
             ScopedDpapiUnprotect dpapiScope(m_DPAPIGuard);
             int count = seal::encryptDirectory(m_AutoEncryptDirectory, m_Password);
-            qCInfo(logBackend) << "cleanup: auto-encrypted" << count << "file(s)";
+            qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                {"event=app.cleanup.auto_encrypt.finish",
+                 "result=ok",
+                 seal::diag::kv("count", count),
+                 seal::diag::pathSummary(m_AutoEncryptDirectory.toUtf8().toStdString())}));
             setStatus(QString("Auto-encrypted %1 file(s) in directory").arg(count));
         }
         catch (const std::exception& e)
         {
-            qCWarning(logBackend) << "cleanup: auto-encrypt failed:" << e.what();
+            qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+                {"event=app.cleanup.auto_encrypt.finish",
+                 "result=fail",
+                 seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+                 seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what()))}));
         }
     }
 
@@ -1116,6 +1322,10 @@ void Backend::cleanup()
     }
 
     seal::Cryptography::trimWorkingSet();
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=app.cleanup.finish",
+                                "result=ok",
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))}));
 }
 
 void Backend::updateWindowTheme(bool dark)
@@ -1143,7 +1353,8 @@ void Backend::lockVault()
     if (!m_PasswordSet)
         return;
 
-    qCInfo(logBackend) << "lockVault: wiping master password";
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=vault.lock", "result=ok"}));
     m_FillController->cancel();
     m_DPAPIGuard = {};
     seal::Cryptography::cleanseString(m_Password);
@@ -1170,7 +1381,8 @@ bool Backend::isCliMode() const
 void Backend::toggleCliMode()
 {
     m_CliMode = !m_CliMode;
-    qCInfo(logBackend) << "cliMode:" << m_CliMode;
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=cli.mode.toggle", seal::diag::kv("state", m_CliMode)}));
     emit cliModeChanged();
 
     if (m_CliMode && !m_CliWelcomeShown)
@@ -1194,6 +1406,8 @@ void Backend::executeCliCommand(const QString& command)
     }
 
     std::string input = trimmed.toStdString();
+    qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=cli.command.begin", seal::diag::kv("input_len", input.size())}));
 
     // --- Built-in commands (no password needed) ---
     seal::CliCallbacks cb;
@@ -1205,6 +1419,8 @@ void Backend::executeCliCommand(const QString& command)
 
     if (seal::HandleCliBuiltin(trimmed, cb))
     {
+        qCInfo(logBackend).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=cli.command.finish", "result=builtin"}));
         return;
     }
 
@@ -1212,6 +1428,8 @@ void Backend::executeCliCommand(const QString& command)
 
     if (!m_PasswordSet)
     {
+        qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=cli.command.finish", "result=defer", "reason=password_required"}));
         m_PendingAction = [this, command]() { executeCliCommand(command); };
         ensurePassword();
         return;
@@ -1239,11 +1457,21 @@ void Backend::executeCliCommand(const QString& command)
         // Priority 1: file or directory path
         if (seal::utils::isDirectoryA(stripped))
         {
+            qCInfo(logBackend).noquote() << QString::fromStdString(
+                seal::diag::joinFields({"event=cli.command.finish",
+                                        "result=dispatch",
+                                        "route=directory",
+                                        seal::diag::pathSummary(stripped)}));
             seal::CliDispatchDirectory(stripped, dcb);
             return;
         }
         if (seal::utils::fileExistsA(stripped))
         {
+            qCInfo(logBackend).noquote() << QString::fromStdString(
+                seal::diag::joinFields({"event=cli.command.finish",
+                                        "result=dispatch",
+                                        "route=file",
+                                        seal::diag::pathSummary(stripped)}));
             seal::CliDispatchFile(stripped, dcb);
             return;
         }
@@ -1252,6 +1480,11 @@ void Backend::executeCliCommand(const QString& command)
         auto hexTokens = seal::utils::extractHexTokens(input);
         if (!hexTokens.empty())
         {
+            qCInfo(logBackend).noquote() << QString::fromStdString(
+                seal::diag::joinFields({"event=cli.command.finish",
+                                        "result=dispatch",
+                                        "route=hex",
+                                        seal::diag::kv("token_count", hexTokens.size())}));
             seal::CliDispatchHexTokens(input, dcb);
             return;
         }
@@ -1259,14 +1492,30 @@ void Backend::executeCliCommand(const QString& command)
         // Priority 2b: base64-encoded ciphertext -> decrypt
         if (seal::utils::isBase64(input) && seal::CliDispatchBase64(input, dcb))
         {
+            qCInfo(logBackend).noquote() << QString::fromStdString(
+                seal::diag::joinFields({"event=cli.command.finish",
+                                        "result=dispatch",
+                                        "route=base64",
+                                        seal::diag::kv("input_len", input.size())}));
             return;
         }
 
         // Priority 3: plain text -> encrypt (show both hex and base64)
+        qCInfo(logBackend).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=cli.command.finish",
+                                    "result=dispatch",
+                                    "route=encrypt",
+                                    seal::diag::kv("input_len", input.size())}));
         seal::CliDispatchEncrypt(input, dcb);
     }
     catch (const std::exception& ex)
     {
+        qCWarning(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=cli.command.finish",
+             "result=fail",
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(ex.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(ex.what())),
+             seal::diag::kv("input_len", input.size())}));
         emit cliOutputReady(QString("Error: %1").arg(QString::fromUtf8(ex.what())));
     }
 }
@@ -1275,6 +1524,11 @@ void Backend::handleQrResultForCli(const QString& text)
 {
     std::string narrow = text.toStdString();
     (void)seal::Clipboard::copyWithTTL(narrow);
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=cli.qr.capture.finish",
+                                "result=ok",
+                                seal::diag::kv("payload_len", text.size()),
+                                "copied=true"}));
     seal::Cryptography::cleanseString(narrow);
     // Mask the QR text in CLI output - value is on the clipboard (TTL-scrubbed).
     emit cliOutputReady(

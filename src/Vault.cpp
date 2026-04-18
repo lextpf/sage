@@ -3,6 +3,7 @@
 #include "Vault.h"
 
 #include "Cryptography.h"
+#include "Diagnostics.h"
 #include "FileOperations.h"
 #include "Logging.h"
 #include "Utils.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -123,11 +125,23 @@ std::vector<VaultRecord> loadVaultIndex(
     const QString& vaultPath,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
-    qCInfo(logVault) << "loadVaultIndex:" << QFileInfo(vaultPath).fileName();
+    const std::string opId = seal::diag::nextOpId("vault_index_load");
+    const auto started = std::chrono::steady_clock::now();
+    const std::string pathMeta = seal::diag::pathSummary(vaultPath.toUtf8().toStdString());
+    auto logInfo = [](std::initializer_list<std::string> fields)
+    { qCInfo(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(fields)); };
+    auto logWarn = [](std::initializer_list<std::string> fields)
+    { qCWarning(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(fields)); };
+
+    logInfo({"event=vault.index.load.begin", "result=start", seal::diag::kv("op", opId), pathMeta});
     std::ifstream in(vaultPath.toStdString(), std::ios::in | std::ios::binary);
     if (!in)
     {
-        qCWarning(logVault) << "loadVaultIndex: cannot open file";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=open_failed",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Cannot open vault file");
     }
 
@@ -136,7 +150,15 @@ std::vector<VaultRecord> loadVaultIndex(
     // Strip any whitespace that may have been inserted (e.g. line breaks).
     std::string compact = seal::utils::stripSpaces(raw);
     if (compact.empty())
+    {
+        logInfo({"event=vault.index.load.finish",
+                 "result=ok",
+                 seal::diag::kv("op", opId),
+                 seal::diag::kv("record_count", 0),
+                 "reason=empty_input",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         return {};
+    }
 
     // Step 2: Hex-decode the text back into the raw binary frame.
     // The vault file is stored as one long hex string so it stays a safe
@@ -144,7 +166,11 @@ std::vector<VaultRecord> loadVaultIndex(
     std::vector<unsigned char> framed;
     if (!seal::utils::from_hex(std::string_view{compact}, framed))
     {
-        qCWarning(logVault) << "loadVaultIndex: invalid framed hex";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=invalid_hex",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Invalid vault format");
     }
 
@@ -152,35 +178,57 @@ std::vector<VaultRecord> loadVaultIndex(
     size_t pos = 0;
     if (framed.size() < 9)
     {
-        qCWarning(logVault) << "loadVaultIndex: framed payload too short";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=payload_too_short",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Corrupted vault file");
     }
     for (unsigned char b : kVaultMagic)
     {
         if (framed[pos++] != b)
         {
-            qCWarning(logVault) << "loadVaultIndex: bad magic";
+            logWarn({"event=vault.index.load.finish",
+                     "result=fail",
+                     seal::diag::kv("op", opId),
+                     "reason=bad_magic",
+                     seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
             throw std::runtime_error("Invalid vault format");
         }
     }
     const unsigned char version = framed[pos++];
     if (version != kVaultFormatVersion)
     {
-        qCWarning(logVault) << "loadVaultIndex: unsupported format version" << version;
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=unsupported_version",
+                 seal::diag::kv("version", version),
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Unsupported vault format version");
     }
 
     uint32_t entryCount = 0;
     if (!readU32BE(framed, pos, entryCount))
     {
-        qCWarning(logVault) << "loadVaultIndex: missing entry count";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=missing_entry_count",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Corrupted vault file");
     }
     // Sanity check: each record needs at least 8 bytes (two u32 length fields),
     // so reject counts that would be impossible given the remaining data.
     if (entryCount > (framed.size() - pos) / 8)
     {
-        qCWarning(logVault) << "loadVaultIndex: impossible entry count";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=impossible_entry_count",
+                 seal::diag::kv("entry_count", entryCount),
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Corrupted vault file");
     }
 
@@ -199,7 +247,12 @@ std::vector<VaultRecord> loadVaultIndex(
             !readSizedBlob(framed, pos, platformLen, platformBlob) ||
             !readU32BE(framed, pos, credLen) || !readSizedBlob(framed, pos, credLen, credBlob))
         {
-            qCWarning(logVault) << "loadVaultIndex: truncated framed payload";
+            logWarn({"event=vault.index.load.finish",
+                     "result=fail",
+                     seal::diag::kv("op", opId),
+                     "reason=truncated_payload",
+                     seal::diag::kv("entry_index", i),
+                     seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
             throw std::runtime_error("Corrupted vault file");
         }
 
@@ -221,7 +274,12 @@ std::vector<VaultRecord> loadVaultIndex(
             // never reveals how many records the vault holds.  If we kept
             // going, an attacker could measure how far parsing progressed
             // and infer the record count even without the correct password.
-            qCWarning(logVault) << "loadVaultIndex: wrong password (failed on entry" << i << ")";
+            logWarn({"event=vault.index.load.finish",
+                     "result=fail",
+                     seal::diag::kv("op", opId),
+                     "reason=wrong_password",
+                     seal::diag::kv("entry_index", i),
+                     seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
             throw std::runtime_error("Wrong password");
         }
     }
@@ -229,11 +287,19 @@ std::vector<VaultRecord> loadVaultIndex(
     // file corruption, accidental concatenation, or a tampered payload.
     if (pos != framed.size())
     {
-        qCWarning(logVault) << "loadVaultIndex: trailing bytes in framed payload";
+        logWarn({"event=vault.index.load.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=trailing_bytes",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         throw std::runtime_error("Corrupted vault file");
     }
 
-    qCInfo(logVault) << "loadVaultIndex: parsed" << records.size() << "record(s)";
+    logInfo({"event=vault.index.load.finish",
+             "result=ok",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("record_count", records.size()),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
     return records;
 }
 
@@ -242,8 +308,19 @@ bool saveVaultV2(
     const std::vector<VaultRecord>& records,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
-    qCInfo(logVault) << "saveVaultV2:" << QFileInfo(vaultPath).fileName()
-                     << "records=" << records.size();
+    const std::string opId = seal::diag::nextOpId("vault_index_save");
+    const auto started = std::chrono::steady_clock::now();
+    const std::string pathMeta = seal::diag::pathSummary(vaultPath.toUtf8().toStdString());
+    auto logInfo = [](std::initializer_list<std::string> fields)
+    { qCInfo(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(fields)); };
+    auto logWarn = [](std::initializer_list<std::string> fields)
+    { qCWarning(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(fields)); };
+
+    logInfo({"event=vault.index.save.begin",
+             "result=start",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("record_count", records.size()),
+             pathMeta});
 
     // Atomic save: write to a temporary file, flush, then rename over the target.
     // This prevents data loss if the process crashes mid-write.
@@ -253,7 +330,11 @@ bool saveVaultV2(
     std::ofstream out(tmpPath, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!out)
     {
-        qCWarning(logVault) << "saveVaultV2: cannot open temp file for writing";
+        logWarn({"event=vault.index.save.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=open_temp_failed",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         return false;
     }
 
@@ -284,7 +365,13 @@ bool saveVaultV2(
         if (platformBlob.size() > std::numeric_limits<uint32_t>::max() ||
             rec.encryptedBlob.size() > std::numeric_limits<uint32_t>::max())
         {
-            qCWarning(logVault) << "saveVaultV2: encrypted field too large";
+            logWarn({"event=vault.index.save.finish",
+                     "result=fail",
+                     seal::diag::kv("op", opId),
+                     "reason=field_too_large",
+                     seal::diag::kv("platform_blob_len", platformBlob.size()),
+                     seal::diag::kv("credential_blob_len", rec.encryptedBlob.size()),
+                     seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
             out.close();
             DeleteFileA(tmpPath.c_str());
             return false;
@@ -295,7 +382,12 @@ bool saveVaultV2(
 
     if (serialized.size() > std::numeric_limits<uint32_t>::max())
     {
-        qCWarning(logVault) << "saveVaultV2: too many records";
+        logWarn({"event=vault.index.save.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=too_many_records",
+                 seal::diag::kv("serialized_count", serialized.size()),
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         out.close();
         DeleteFileA(tmpPath.c_str());
         return false;
@@ -340,15 +432,27 @@ bool saveVaultV2(
                          finalPath.c_str(),
                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
         {
-            qCWarning(logVault) << "saveVaultV2: rename failed";
+            logWarn({"event=vault.index.save.finish",
+                     "result=fail",
+                     seal::diag::kv("op", opId),
+                     "reason=rename_failed",
+                     seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
             DeleteFileA(tmpPath.c_str());
             return false;
         }
-        qCInfo(logVault) << "saveVaultV2: success";
+        logInfo({"event=vault.index.save.finish",
+                 "result=ok",
+                 seal::diag::kv("op", opId),
+                 seal::diag::kv("record_count", serialized.size()),
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
     }
     else
     {
-        qCWarning(logVault) << "saveVaultV2: write error";
+        logWarn({"event=vault.index.save.finish",
+                 "result=fail",
+                 seal::diag::kv("op", opId),
+                 "reason=write_failed",
+                 seal::diag::kv("duration_ms", seal::diag::elapsedMs(started))});
         DeleteFileA(tmpPath.c_str());
     }
     return ok;
@@ -358,7 +462,10 @@ DecryptedCredential decryptCredentialOnDemand(
     const VaultRecord& record,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password)
 {
-    qCDebug(logVault) << "decryptCredentialOnDemand: platform=" << record.platform.c_str();
+    qCDebug(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=credential.decrypt.begin",
+         seal::diag::kv("platform_len", record.platform.size()),
+         seal::diag::kv("encrypted_blob_len", record.encryptedBlob.size())}));
     // The encrypted credential blob contains "username\0password" -- a single
     // null byte separates the two fields inside the decrypted plaintext.
     auto plainBytes = seal::Cryptography::decryptPacket(
@@ -380,7 +487,11 @@ DecryptedCredential decryptCredentialOnDemand(
 
     if (sep == len)
     {
-        qCWarning(logVault) << "decryptCredentialOnDemand: malformed blob (no null separator)";
+        qCWarning(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=credential.decrypt.finish",
+             "result=fail",
+             "reason=malformed_blob",
+             seal::diag::kv("encrypted_blob_len", record.encryptedBlob.size())}));
         seal::Cryptography::cleanseString(plainBytes);
         throw std::runtime_error("Malformed credential blob");
     }
@@ -404,6 +515,12 @@ DecryptedCredential decryptCredentialOnDemand(
     // destructor - unlike the previous SecureZeroMemory(&obj) which was UB.
     wipeStdString(userUtf8);
     wipeStdString(passUtf8);
+
+    qCDebug(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=credential.decrypt.finish",
+         "result=ok",
+         seal::diag::kv("username_chars", cred.username.size()),
+         seal::diag::kv("credential_chars", cred.username.size() + cred.password.size())}));
     return cred;
 }
 
@@ -413,7 +530,8 @@ VaultRecord encryptCredential(
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& password,
     const seal::basic_secure_string<wchar_t, seal::locked_allocator<wchar_t>>& masterPassword)
 {
-    qCDebug(logVault) << "encryptCredential: platform=" << platform.c_str();
+    qCDebug(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=credential.encrypt.begin", seal::diag::kv("platform_len", platform.size())}));
     // Convert wide-char credentials to UTF-8 for the on-disk format.
     std::string userUtf8 = seal::utils::secureWideToUtf8(username);
     std::string passUtf8 = seal::utils::secureWideToUtf8(password);
@@ -444,6 +562,11 @@ VaultRecord encryptCredential(
     rec.encryptedBlob = std::move(credBlob);
     rec.dirty = true;
     rec.deleted = false;
+    qCDebug(logVault).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=credential.encrypt.finish",
+                                "result=ok",
+                                seal::diag::kv("platform_blob_len", rec.encryptedPlatform.size()),
+                                seal::diag::kv("credential_blob_len", rec.encryptedBlob.size())}));
     return rec;
 }
 
@@ -453,8 +576,14 @@ int encryptDirectory(
 {
     std::string path = dirPath.toStdString();
     int count = 0;
+    const std::string opId = seal::diag::nextOpId("vault_dir_encrypt");
+    const auto started = std::chrono::steady_clock::now();
 
-    qCInfo(logVault) << "encryptDirectory:" << dirPath;
+    qCInfo(logVault).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.encrypt.begin",
+                                "result=start",
+                                seal::diag::kv("op", opId),
+                                seal::diag::pathSummary(path)}));
     try
     {
         // Collect all eligible file paths first, then process them in a
@@ -493,10 +622,25 @@ int encryptDirectory(
     }
     catch (const std::exception& e)
     {
-        qCWarning(logVault) << "encryptDirectory: error:" << e.what();
+        qCWarning(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=directory.encrypt.finish",
+             "result=partial",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("count", count),
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what())),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+             seal::diag::pathSummary(path)}));
+        return count;
     }
 
-    qCInfo(logVault) << "encryptDirectory: encrypted" << count << "file(s)";
+    qCInfo(logVault).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.encrypt.finish",
+                                "result=ok",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("count", count),
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                                seal::diag::pathSummary(path)}));
     return count;
 }
 
@@ -506,8 +650,14 @@ int decryptDirectory(
 {
     std::string path = dirPath.toStdString();
     int count = 0;
+    const std::string opId = seal::diag::nextOpId("vault_dir_decrypt");
+    const auto started = std::chrono::steady_clock::now();
 
-    qCInfo(logVault) << "decryptDirectory:" << dirPath;
+    qCInfo(logVault).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.decrypt.begin",
+                                "result=start",
+                                seal::diag::kv("op", opId),
+                                seal::diag::pathSummary(path)}));
     try
     {
         // Collect all eligible file paths first, then process them in a
@@ -545,10 +695,25 @@ int decryptDirectory(
     }
     catch (const std::exception& e)
     {
-        qCWarning(logVault) << "decryptDirectory: error:" << e.what();
+        qCWarning(logVault).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=directory.decrypt.finish",
+             "result=partial",
+             seal::diag::kv("op", opId),
+             seal::diag::kv("count", count),
+             seal::diag::kv("reason", seal::diag::reasonFromMessage(e.what())),
+             seal::diag::kv("detail", seal::diag::sanitizeAscii(e.what())),
+             seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+             seal::diag::pathSummary(path)}));
+        return count;
     }
 
-    qCInfo(logVault) << "decryptDirectory: decrypted" << count << "file(s)";
+    qCInfo(logVault).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=directory.decrypt.finish",
+                                "result=ok",
+                                seal::diag::kv("op", opId),
+                                seal::diag::kv("count", count),
+                                seal::diag::kv("duration_ms", seal::diag::elapsedMs(started)),
+                                seal::diag::pathSummary(path)}));
     return count;
 }
 

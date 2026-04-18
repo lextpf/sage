@@ -1,6 +1,7 @@
 #ifdef USE_QT_UI
 
 #include "VaultModel.h"
+#include "Diagnostics.h"
 #include "Logging.h"
 
 namespace seal
@@ -77,7 +78,10 @@ void VaultListModel::setFilter(const QString& filter)
     if (m_Filter == filter)
         return;
     m_Filter = filter;
-    qCDebug(logBackend) << "setFilter:" << (filter.isEmpty() ? "none" : filter);
+    qCDebug(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=model.filter.set",
+                                seal::diag::kv("active", !filter.isEmpty()),
+                                seal::diag::kv("filter_len", filter.toUtf8().size())}));
     refresh();
 }
 
@@ -96,7 +100,11 @@ void VaultListModel::refresh()
     beginResetModel();
     rebuildFilteredIndices();
     endResetModel();
-    qCDebug(logBackend) << "model refresh: visible=" << m_FilteredIndices.size();
+    qCDebug(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=model.refresh",
+                                seal::diag::kv("previous_visible", oldCount),
+                                seal::diag::kv("visible_count", m_FilteredIndices.size()),
+                                seal::diag::kv("filter_active", !m_Filter.isEmpty())}));
     if ((int)m_FilteredIndices.size() != oldCount)
         emit countChanged();
 }
