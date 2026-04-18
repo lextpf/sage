@@ -3,6 +3,7 @@
 #include "QmlMain.h"
 #include "Backend.h"
 #include "Cryptography.h"
+#include "Diagnostics.h"
 #include "Logging.h"
 
 #include <QtCore/QCoreApplication>
@@ -49,14 +50,19 @@ int RunQMLMode(int argc, char* argv[])
     QQuickStyle::setStyle("Basic");
 
     QGuiApplication app(argc, argv);
-    installSealMessageHandler();
 
     app.setApplicationName("seal");
     app.setOrganizationName("seal");
     const qreal uiScale = computeUiScale();
-    qCInfo(logApp) << "startup: uiScale =" << uiScale;
+    qCInfo(logApp).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=app.startup.begin", "mode=gui", seal::diag::kv("ui_scale", uiScale, 2)}));
     if (seal::Cryptography::isRemoteSession())
-        qCCritical(logApp) << "running in a Remote Desktop session";
+    {
+        qCCritical(logApp).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=app.environment.remote_session",
+                                    "result=fail",
+                                    "reason=remote_session_detected"}));
+    }
 
     seal::Backend backend;
     QQmlApplicationEngine engine;
@@ -76,11 +82,13 @@ int RunQMLMode(int argc, char* argv[])
 
     if (engine.rootObjects().isEmpty())
     {
-        qCCritical(logApp) << "Failed to load QML - no root objects created";
+        qCCritical(logApp).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=app.qml.load.fail", "result=fail", "reason=no_root_objects"}));
         return 1;
     }
 
-    qCInfo(logApp) << "QML loaded successfully";
+    qCInfo(logApp).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=app.qml.load.ok", "result=ok"}));
     return app.exec();
 }
 

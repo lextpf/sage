@@ -1,6 +1,7 @@
 #ifdef USE_QT_UI
 
 #include "WindowController.h"
+#include "Diagnostics.h"
 #include "Logging.h"
 #include "WindowChrome.h"
 
@@ -62,7 +63,8 @@ void WindowController::toggleAlwaysOnTop()
     m_AlwaysOnTop = !m_AlwaysOnTop;
     SetWindowPos(
         hwnd, m_AlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-    qCInfo(logBackend) << "alwaysOnTop:" << m_AlwaysOnTop;
+    qCInfo(logBackend).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=window.always_on_top.toggle", seal::diag::kv("state", m_AlwaysOnTop)}));
     emit alwaysOnTopChanged();
 }
 
@@ -93,7 +95,11 @@ void WindowController::toggleCompact()
                     m_NormalHeight > 0 ? m_NormalHeight : 690);
     }
 
-    qCInfo(logBackend) << "compactMode:" << m_Compact;
+    qCInfo(logBackend).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=window.compact.toggle",
+                                seal::diag::kv("state", m_Compact),
+                                seal::diag::kv("width", win->width()),
+                                seal::diag::kv("height", win->height())}));
     emit compactChanged();
 }
 

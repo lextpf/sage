@@ -4,6 +4,8 @@
 
 #ifdef USE_QT_UI
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QString>
+#include "Diagnostics.h"
 #include "Logging.h"
 #endif
 
@@ -63,7 +65,8 @@ void Cryptography::hardenProcessAccess()
     }
 
 #ifdef USE_QT_UI
-    qCInfo(logCrypto) << "hardenProcessAccess:" << (ok ? "applied" : "failed");
+    qCInfo(logCrypto).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=security.process_access.apply", seal::diag::kv("result", ok ? "ok" : "fail")}));
 #endif
 }
 
@@ -83,7 +86,8 @@ void Cryptography::disableCrashDumps()
         });
 
 #ifdef USE_QT_UI
-    qCInfo(logCrypto) << "disableCrashDumps: WER suppressed, custom exception filter installed";
+    qCInfo(logCrypto).noquote() << QString::fromStdString(seal::diag::joinFields(
+        {"event=security.crash_dumps.disable", "result=ok", "wer=suppressed", "filter=installed"}));
 #endif
 }
 
@@ -93,7 +97,11 @@ void Cryptography::detectDebugger()
     if (IsDebuggerPresent())
     {
 #ifdef USE_QT_UI
-        qCWarning(logCrypto) << "detectDebugger: user-mode debugger detected, aborting";
+        qCCritical(logCrypto).noquote()
+            << QString::fromStdString(seal::diag::joinFields({"event=security.debugger.check",
+                                                              "result=fail",
+                                                              "reason=user_mode_debugger",
+                                                              "action=abort"}));
 #else
         OutputDebugStringA("[seal] FATAL: debugger detected\n");
 #endif
@@ -111,7 +119,11 @@ void Cryptography::detectDebugger()
     if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger) && remoteDebugger)
     {
 #ifdef USE_QT_UI
-        qCWarning(logCrypto) << "detectDebugger: remote debugger detected, aborting";
+        qCCritical(logCrypto).noquote()
+            << QString::fromStdString(seal::diag::joinFields({"event=security.debugger.check",
+                                                              "result=fail",
+                                                              "reason=remote_debugger",
+                                                              "action=abort"}));
 #else
         OutputDebugStringA("[seal] FATAL: remote debugger detected\n");
 #endif
@@ -139,7 +151,11 @@ void Cryptography::detectDebugger()
             if (status == 0 && debugPort != 0)
             {
 #ifdef USE_QT_UI
-                qCWarning(logCrypto) << "detectDebugger: kernel debug port detected, aborting";
+                qCCritical(logCrypto).noquote() << QString::fromStdString(
+                    seal::diag::joinFields({"event=security.debugger.check",
+                                            "result=fail",
+                                            "reason=kernel_debug_port",
+                                            "action=abort"}));
 #else
                 OutputDebugStringA("[seal] FATAL: kernel debug port detected\n");
 #endif
@@ -151,7 +167,8 @@ void Cryptography::detectDebugger()
     }
 
 #ifdef USE_QT_UI
-    qCInfo(logCrypto) << "detectDebugger: no debugger detected";
+    qCInfo(logCrypto).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=security.debugger.check", "result=ok"}));
 #endif
 }
 
@@ -221,7 +238,10 @@ BOOL Cryptography::setSecureProcessMitigations(bool allowDynamicCode)
     allSuccess &= pSet(ProcessImageLoadPolicy, &imgPolicy, sizeof(imgPolicy));
 
 #ifdef USE_QT_UI
-    qCInfo(logCrypto) << "setSecureProcessMitigations:" << (allSuccess ? "all applied" : "partial");
+    qCInfo(logCrypto).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=security.mitigations.apply",
+                                seal::diag::kv("result", allSuccess ? "ok" : "partial"),
+                                seal::diag::kv("allow_dynamic_code", allowDynamicCode)}));
 #endif
     return allSuccess;
 }
@@ -263,9 +283,18 @@ BOOL Cryptography::tryEnableLockPrivilege()
     BOOL result = (gle == ERROR_SUCCESS);
 #ifdef USE_QT_UI
     if (result)
-        qCInfo(logCrypto) << "SeLockMemoryPrivilege: enabled";
+    {
+        qCInfo(logCrypto).noquote() << QString::fromStdString(
+            seal::diag::joinFields({"event=security.lock_pages.enable", "result=ok"}));
+    }
     else
-        qCWarning(logCrypto) << "SeLockMemoryPrivilege: not available (error=" << gle << ")";
+    {
+        qCWarning(logCrypto).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=security.lock_pages.enable",
+             "result=fail",
+             "reason=privilege_unavailable",
+             seal::diag::kv("error", static_cast<unsigned long long>(gle))}));
+    }
 #endif
     return result;
 }
@@ -330,7 +359,11 @@ Cryptography::LockedKeyBuffer Cryptography::deriveKey(const SecurePwd& pwd,
                  "scrypt failed");
 
 #ifdef USE_QT_UI
-    qCDebug(logCrypto) << "deriveKey: scrypt completed in" << timer.elapsed() << "ms";
+    qCDebug(logCrypto).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=crypto.derive_key.finish",
+                                "result=ok",
+                                "algo=scrypt",
+                                seal::diag::kv("duration_ms", timer.elapsed())}));
 #endif
 
     return key;
@@ -399,8 +432,11 @@ std::vector<unsigned char> Cryptography::encryptPacket(std::span<const unsigned 
     out.insert(out.end(), tag.begin(), tag.end());
 
 #ifdef USE_QT_UI
-    qCDebug(logCrypto) << "encryptPacket: plaintext=" << plaintext.size()
-                       << "bytes, packet=" << out.size() << "bytes";
+    qCDebug(logCrypto).noquote() << QString::fromStdString(
+        seal::diag::joinFields({"event=crypto.encrypt_packet.finish",
+                                "result=ok",
+                                seal::diag::kv("plaintext_bytes", plaintext.size()),
+                                seal::diag::kv("packet_bytes", out.size())}));
 #endif
     cleanseString(key);
     return out;
@@ -483,7 +519,8 @@ std::vector<unsigned char> Cryptography::decryptPacket(std::span<const unsigned 
     if (ok != 1)
     {
 #ifdef USE_QT_UI
-        qCWarning(logCrypto) << "decryptPacket: GCM authentication failed";
+        qCWarning(logCrypto).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=crypto.decrypt_packet.finish", "result=fail", "reason=gcm_auth_failed"}));
 #endif
         cleanseString(key);
         throw std::runtime_error("Authentication failed (bad password or corrupted data)");
@@ -577,7 +614,8 @@ void Cryptography::verifyPacket(std::span<const unsigned char> packet, const Sec
     if (ok != 1)
     {
 #ifdef USE_QT_UI
-        qCWarning(logCrypto) << "verifyPacket: GCM authentication failed";
+        qCWarning(logCrypto).noquote() << QString::fromStdString(seal::diag::joinFields(
+            {"event=crypto.verify_packet.finish", "result=fail", "reason=gcm_auth_failed"}));
 #endif
         throw std::runtime_error("Authentication failed (bad password or corrupted data)");
     }
